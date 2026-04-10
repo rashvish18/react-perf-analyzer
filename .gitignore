@@ -1,0 +1,17 @@
+# Rust build artifacts
+/target/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.local
+
+# Nested clone artifact
+/react-perf-analyzer/
+/react-perf-report.html
