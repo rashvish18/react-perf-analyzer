@@ -1,6 +1,6 @@
 [package]
 name = "react-perf-analyzer"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Static analysis CLI for React performance anti-patterns"
 license = "MIT"
