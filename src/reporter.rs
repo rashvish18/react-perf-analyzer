@@ -171,7 +171,7 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
 
     let max_bar = top_files.first().map(|(_, n)| *n).unwrap_or(1);
 
-    // Rule metadata: colour + friendly label.
+    // Rule metadata: colour + friendly label (all 15 rules).
     let rule_meta: &[(&str, &str, &str)] = &[
         ("unstable_props", "#f97316", "Unstable Props"),
         ("no_inline_jsx_fn", "#ef4444", "Inline JSX Function"),
@@ -179,6 +179,15 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
         ("large_component", "#8b5cf6", "Large Component"),
         ("no_new_context_value", "#3b82f6", "New Context Value"),
         ("no_expensive_in_render", "#06b6d4", "Expensive in Render"),
+        ("no_component_in_component", "#ec4899", "Component in Component"),
+        ("no_unstable_hook_deps", "#f59e0b", "Unstable Hook Deps"),
+        ("no_new_in_jsx_prop", "#10b981", "New in JSX Prop"),
+        ("no_use_state_lazy_init_missing", "#6366f1", "useState Lazy Init"),
+        ("no_json_in_render", "#14b8a6", "JSON in Render"),
+        ("no_object_entries_in_render", "#f43f5e", "Object.entries in Render"),
+        ("no_regex_in_render", "#a855f7", "Regex in Render"),
+        ("no_math_random_in_render", "#0ea5e9", "Math.random in Render"),
+        ("no_useless_memo", "#84cc16", "Useless Memo"),
     ];
 
     fn rule_color<'a>(rule: &str, meta: &[(&'a str, &'a str, &'a str)]) -> &'a str {
@@ -205,10 +214,11 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
         let color = rule_color(rule, rule_meta);
         let label = rule_label(rule, rule_meta);
         rule_cards.push_str(&format!(
-            r#"<div class="card" style="border-left:4px solid {color}">
+            r#"<div class="card" data-rule="{rule}" style="border-left:4px solid {color}" onclick="filterByRule(this,'{rule}')">
               <div class="card-count" style="color:{color}">{count}</div>
               <div class="card-rule">{rule}</div>
               <div class="card-label">{label}</div>
+              <div class="card-hint">click to filter</div>
             </div>"#
         ));
     }
@@ -216,9 +226,9 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
     // ── Build bar chart HTML ───────────────────────────────────────────────────
 
     let mut bar_rows = String::new();
-    for (file, count) in &top_files {
+    for (idx, (file, count)) in top_files.iter().enumerate() {
         let pct = (*count as f64 / max_bar as f64 * 100.0) as usize;
-        // Show only the last 2 path segments for readability.
+        // Show only the last 3 path segments for readability.
         let short: String = std::path::Path::new(file)
             .components()
             .rev()
@@ -229,9 +239,14 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join("/");
+        // Find this file's position in file_list so we can link to its section.
+        let file_idx = file_list
+            .iter()
+            .position(|(f, _)| f.as_str() == *file)
+            .unwrap_or(idx);
         bar_rows.push_str(&format!(
-            r#"<div class="bar-row">
-              <div class="bar-label" title="{file}">{short}</div>
+            r#"<div class="bar-row" onclick="scrollToFile({file_idx})" style="cursor:pointer" title="Jump to {file}">
+              <div class="bar-label">{short}</div>
               <div class="bar-track">
                 <div class="bar-fill" style="width:{pct}%"></div>
               </div>
@@ -247,19 +262,26 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
         let mut sorted_issues = file_issues.clone();
         sorted_issues.sort_by_key(|i| (i.line, i.column));
 
+        // Collect unique rules for this file (used by JS filter).
+        let mut file_rules: Vec<&str> = sorted_issues.iter().map(|i| i.rule.as_str()).collect();
+        file_rules.dedup();
+        file_rules.sort_unstable();
+        file_rules.dedup();
+        let data_rules = file_rules.join(" ");
+
         let mut rows = String::new();
         for issue in &sorted_issues {
             let color = rule_color(&issue.rule, rule_meta);
             let msg = html_escape(&issue.message);
             rows.push_str(&format!(
-                r#"<tr>
+                r#"<tr data-rule="{rule}">
                   <td class="td-loc">{line}:{col}</td>
                   <td><span class="badge" style="background:{color}">{rule}</span></td>
                   <td class="td-msg">{msg}</td>
                 </tr>"#,
+                rule = issue.rule,
                 line = issue.line,
                 col = issue.column,
-                rule = issue.rule,
             ));
         }
 
@@ -270,7 +292,7 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
             .to_string();
 
         issue_sections.push_str(&format!(
-            r#"<details id="file-{idx}">
+            r#"<details id="file-{idx}" data-rules="{data_rules}" data-file="{file}">
               <summary>
                 <span class="file-path">{short_file}</span>
                 <span class="file-badge">{count}</span>
@@ -316,22 +338,43 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
   .stat-lbl {{ font-size: 12px; color: #94a3b8; margin-top: 4px; text-transform: uppercase;
                letter-spacing: 0.05em; }}
 
-  /* Rule cards */
-  h2 {{ font-size: 15px; font-weight: 600; color: #cbd5e1; margin-bottom: 14px;
+  /* Section headers */
+  .section-header {{ display: flex; align-items: center; justify-content: space-between;
+                     margin-bottom: 14px; flex-wrap: wrap; gap: 10px; }}
+  h2 {{ font-size: 15px; font-weight: 600; color: #cbd5e1;
        text-transform: uppercase; letter-spacing: 0.05em; }}
+
+  /* Rule cards */
   .cards {{ display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 32px; }}
   .card {{ background: #1e293b; border-radius: 10px; padding: 16px 20px; flex: 1;
-           min-width: 160px; transition: transform .15s; cursor: default; }}
-  .card:hover {{ transform: translateY(-2px); }}
+           min-width: 160px; transition: transform .15s, box-shadow .15s, opacity .15s;
+           cursor: pointer; position: relative; }}
+  .card:hover {{ transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,.4); }}
+  .card.active {{ box-shadow: 0 0 0 2px #38bdf8; transform: translateY(-2px); }}
+  .card.dimmed {{ opacity: .35; }}
   .card-count {{ font-size: 28px; font-weight: 800; }}
   .card-rule {{ font-family: monospace; font-size: 11px; color: #94a3b8; margin-top: 4px; }}
   .card-label {{ font-size: 12px; color: #cbd5e1; margin-top: 2px; }}
+  .card-hint {{ font-size: 10px; color: #475569; margin-top: 6px; }}
+
+  /* Active filter banner */
+  #filter-banner {{ display: none; align-items: center; gap: 10px; background: #0c2240;
+                    border: 1px solid #1e40af; border-radius: 8px; padding: 8px 16px;
+                    margin-bottom: 16px; font-size: 13px; color: #93c5fd; }}
+  #filter-banner.visible {{ display: flex; }}
+  #filter-banner strong {{ color: #bfdbfe; }}
+  #clear-filter {{ margin-left: auto; background: #1e3a5f; border: 1px solid #2563eb;
+                   color: #93c5fd; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+                   font-size: 12px; }}
+  #clear-filter:hover {{ background: #1d4ed8; color: white; }}
 
   /* Bar chart */
   .bars {{ background: #1e293b; border-radius: 10px; padding: 20px 24px;
            margin-bottom: 32px; }}
-  .bar-row {{ display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }}
+  .bar-row {{ display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+              border-radius: 6px; padding: 4px; transition: background .15s; }}
   .bar-row:last-child {{ margin-bottom: 0; }}
+  .bar-row:hover {{ background: #263045; }}
   .bar-label {{ width: 260px; font-family: monospace; font-size: 11px; color: #94a3b8;
                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
                text-align: right; flex-shrink: 0; }}
@@ -341,11 +384,24 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
   .bar-count {{ width: 40px; text-align: right; font-weight: 600; color: #f8fafc;
                font-size: 12px; flex-shrink: 0; }}
 
+  /* Issue section toolbar */
+  .issues-toolbar {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
+  .search-box {{ background: #1e293b; border: 1px solid #334155; color: #e2e8f0;
+                border-radius: 6px; padding: 6px 12px; font-size: 12px; width: 260px;
+                outline: none; }}
+  .search-box:focus {{ border-color: #38bdf8; }}
+  .search-box::placeholder {{ color: #475569; }}
+  .btn {{ background: #1e293b; border: 1px solid #334155; color: #94a3b8;
+          border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 12px; }}
+  .btn:hover {{ background: #273549; color: #e2e8f0; }}
+  #visible-count {{ font-size: 12px; color: #64748b; margin-left: auto; }}
+
   /* Issue sections */
   .issue-sections {{ display: flex; flex-direction: column; gap: 8px; }}
   details {{ background: #1e293b; border: 1px solid #334155; border-radius: 8px;
              overflow: hidden; }}
   details[open] {{ border-color: #475569; }}
+  details.hidden-section {{ display: none; }}
   summary {{ display: flex; align-items: center; gap: 10px; padding: 12px 16px;
              cursor: pointer; list-style: none; user-select: none; }}
   summary::-webkit-details-marker {{ display: none; }}
@@ -361,12 +417,18 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
   .issue-table th {{ background: #0f172a; color: #64748b; font-weight: 600;
                     padding: 8px 12px; text-align: left; font-size: 11px;
                     text-transform: uppercase; letter-spacing: 0.05em; }}
-  .issue-table td {{ padding: 8px 12px; border-top: 1px solid #1e293b; vertical-align: top; }}
+  .issue-table td {{ padding: 8px 12px; border-top: 1px solid #0f172a; vertical-align: top; }}
   .issue-table tr:hover td {{ background: #1e2a3a; }}
+  .issue-table tr.row-hidden {{ display: none; }}
   .td-loc {{ font-family: monospace; color: #94a3b8; white-space: nowrap; width: 80px; }}
   .td-msg {{ color: #cbd5e1; }}
   .badge {{ display: inline-block; font-family: monospace; font-size: 10px; font-weight: 600;
            color: white; border-radius: 4px; padding: 2px 6px; white-space: nowrap; }}
+
+  /* No results */
+  #no-results {{ display: none; text-align: center; padding: 40px; color: #475569;
+                 font-size: 14px; }}
+  #no-results.visible {{ display: block; }}
 
   /* Footer */
   .footer {{ text-align: center; padding: 24px; color: #475569; font-size: 11px; }}
@@ -391,16 +453,34 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
   </div>
 
   <!-- Rule breakdown -->
-  <h2>Issues by Rule</h2>
+  <div class="section-header">
+    <h2>Issues by Rule</h2>
+    <span style="font-size:12px;color:#475569">Click a card to filter issues below</span>
+  </div>
   <div class="cards">{rule_cards}</div>
 
+  <!-- Active filter banner -->
+  <div id="filter-banner">
+    Showing issues for rule: <strong id="filter-rule-name"></strong>
+    <button id="clear-filter" onclick="clearFilter()">✕ Show All</button>
+  </div>
+
   <!-- Top 10 files -->
-  <h2>Top 10 Most Affected Files</h2>
+  <h2 style="margin-bottom:14px">Top 10 Most Affected Files <span style="font-size:11px;color:#475569;font-weight:400;text-transform:none">(click to jump)</span></h2>
   <div class="bars">{bar_rows}</div>
 
   <!-- Full issue list -->
-  <h2>All Issues — {affected_files} files</h2>
-  <div class="issue-sections">{issue_sections}</div>
+  <div class="section-header">
+    <h2>All Issues — {affected_files} files</h2>
+    <div class="issues-toolbar">
+      <input class="search-box" type="search" id="file-search" placeholder="🔍 Filter by filename…" oninput="filterBySearch(this.value)">
+      <button class="btn" onclick="expandAll()">Expand All</button>
+      <button class="btn" onclick="collapseAll()">Collapse All</button>
+      <span id="visible-count"></span>
+    </div>
+  </div>
+  <div class="issue-sections" id="issue-sections">{issue_sections}</div>
+  <div id="no-results">No files match your filter.</div>
 
 </div>
 
@@ -409,6 +489,103 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
   &nbsp;·&nbsp;
   <a href="https://github.com/rashvish18/react-perf-analyzer">GitHub</a>
 </div>
+
+<script>
+  let activeRule = null;
+  let activeSearch = '';
+
+  // ── Rule card filter ──────────────────────────────────────────────────────
+  function filterByRule(card, rule) {{
+    if (activeRule === rule) {{
+      clearFilter();
+      return;
+    }}
+    activeRule = rule;
+
+    // Card visual state
+    document.querySelectorAll('.card').forEach(c => {{
+      c.classList.toggle('active', c.dataset.rule === rule);
+      c.classList.toggle('dimmed', c.dataset.rule !== rule);
+    }});
+
+    // Banner
+    document.getElementById('filter-rule-name').textContent = rule;
+    document.getElementById('filter-banner').classList.add('visible');
+
+    applyFilters();
+  }}
+
+  function clearFilter() {{
+    activeRule = null;
+    document.querySelectorAll('.card').forEach(c => {{
+      c.classList.remove('active', 'dimmed');
+    }});
+    document.getElementById('filter-banner').classList.remove('visible');
+    applyFilters();
+  }}
+
+  // ── Search filter ─────────────────────────────────────────────────────────
+  function filterBySearch(q) {{
+    activeSearch = q.toLowerCase().trim();
+    applyFilters();
+  }}
+
+  // ── Combined filter logic ─────────────────────────────────────────────────
+  function applyFilters() {{
+    const sections = document.querySelectorAll('#issue-sections details');
+    let visible = 0;
+
+    sections.forEach(section => {{
+      const rules = section.dataset.rules || '';
+      const file  = (section.dataset.file  || '').toLowerCase();
+
+      const ruleMatch  = !activeRule || rules.split(' ').includes(activeRule);
+      const searchMatch = !activeSearch || file.includes(activeSearch);
+
+      const show = ruleMatch && searchMatch;
+      section.classList.toggle('hidden-section', !show);
+
+      if (show) {{
+        visible++;
+        // Auto-open section when filtering by rule, close otherwise
+        if (activeRule) {{
+          section.open = true;
+          // Hide rows that don't belong to the filtered rule
+          section.querySelectorAll('tr[data-rule]').forEach(row => {{
+            row.classList.toggle('row-hidden', row.dataset.rule !== activeRule);
+          }});
+        }} else {{
+          // Restore all rows
+          section.querySelectorAll('tr[data-rule]').forEach(row => {{
+            row.classList.remove('row-hidden');
+          }});
+        }}
+      }}
+    }});
+
+    document.getElementById('visible-count').textContent =
+      visible === sections.length ? '' : `${{visible}} of ${{sections.length}} files`;
+    document.getElementById('no-results').classList.toggle('visible', visible === 0);
+  }}
+
+  // ── Bar chart navigation ──────────────────────────────────────────────────
+  function scrollToFile(idx) {{
+    const el = document.getElementById('file-' + idx);
+    if (!el) return;
+    el.open = true;
+    el.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+  }}
+
+  // ── Expand / Collapse ─────────────────────────────────────────────────────
+  function expandAll() {{
+    document.querySelectorAll('#issue-sections details:not(.hidden-section)')
+      .forEach(d => d.open = true);
+  }}
+  function collapseAll() {{
+    document.querySelectorAll('#issue-sections details')
+      .forEach(d => d.open = false);
+  }}
+</script>
 </body>
 </html>"#
     )

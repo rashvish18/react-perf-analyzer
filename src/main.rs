@@ -137,9 +137,12 @@ fn main() {
                 Ok(_) => {
                     let abs_path =
                         std::fs::canonicalize(&out_path).unwrap_or_else(|_| out_path.clone());
-                    let file_url = format!("file://{}", abs_path.display());
                     eprintln!("✅ HTML report written to: {}", out_path.display());
-                    eprintln!("   {file_url}");
+                    // Auto-open in the default browser (macOS: open, Linux: xdg-open).
+                    #[cfg(target_os = "macos")]
+                    let _ = std::process::Command::new("open").arg(&abs_path).spawn();
+                    #[cfg(target_os = "linux")]
+                    let _ = std::process::Command::new("xdg-open").arg(&abs_path).spawn();
                 }
                 Err(e) => {
                     eprintln!("Error writing HTML report to '{}': {e}", out_path.display());
