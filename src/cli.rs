@@ -1,26 +1,25 @@
 /// cli.rs — CLI argument parsing using clap derive macros.
-///
-/// Defines the top-level `Cli` struct that clap populates from argv.
-/// Kept intentionally minimal: path, output format, and rule thresholds.
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
-/// React performance static analysis tool.
+use crate::rules::Severity;
+
+/// React performance + security static analysis tool.
 ///
 /// Scans JS/TS/JSX files for React-specific performance anti-patterns
-/// and outputs warnings to stdout.
+/// and security vulnerabilities.
 ///
 /// Example usage:
 ///   react-perf-analyzer ./src
-///   react-perf-analyzer ./src --format json
-///   react-perf-analyzer ./src --format html --output report.html
-///   react-perf-analyzer ./src --max-component-lines 150
+///   react-perf-analyzer ./src --category security
+///   react-perf-analyzer ./src --format sarif --output results.sarif
+///   react-perf-analyzer ./src --fail-on high
 #[derive(Parser, Debug)]
 #[command(
     name = "react-perf-analyzer",
     version,
-    about = "Static analysis for React performance anti-patterns",
+    about = "React performance + security scanner. Single binary. Zero config.",
     long_about = None
 )]
 pub struct Cli {
@@ -32,48 +31,88 @@ pub struct Cli {
     ///
     /// - text: Human-readable columnar output (default)
     /// - json: Machine-readable JSON array
-    /// - html: Self-contained HTML report with summary, charts, and issue table
+    /// - html: Self-contained HTML report
+    /// - sarif: SARIF 2.1.0 for GitHub/GitLab/Azure DevOps inline annotations
     #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: OutputFormat,
 
     /// Write output to a file instead of stdout.
-    ///
-    /// Required when using --format html (report can be very large).
-    /// Optional for text and json — defaults to stdout when omitted.
-    ///
-    /// Example: --output report.html
     #[arg(long, value_name = "FILE")]
     pub output: Option<PathBuf>,
 
-    /// Maximum number of lines allowed in a single React component.
+    /// Rule category to run.
     ///
-    /// Components exceeding this threshold trigger the `large_component` warning.
-    /// Default is 300 lines.
+    /// - all: Run all rules (default)
+    /// - perf: Only React performance rules (existing 15)
+    /// - security: Only React security rules
+    #[arg(long, value_enum, default_value = "all", value_name = "CATEGORY")]
+    pub category: Category,
+
+    /// Minimum severity level that causes a non-zero exit code.
+    ///
+    /// Useful for CI gates. Example: --fail-on high exits 1 if any
+    /// high or critical issues are found.
+    ///
+    /// - none: Never fail on severity (default — exit 1 only if any issues)
+    /// - low | medium | high | critical: fail if issues at that level or above
+    #[arg(long, value_enum, default_value = "none", value_name = "LEVEL")]
+    pub fail_on: FailOn,
+
+    /// Maximum number of lines allowed in a single React component.
     #[arg(long, default_value_t = 300, value_name = "LINES")]
     pub max_component_lines: usize,
 
     /// Include test and Storybook files in the analysis.
-    ///
-    /// By default, the following file patterns are skipped because inline
-    /// functions and object literals are idiomatic in tests/stories:
-    ///   *.test.{js,ts,jsx,tsx}
-    ///   *.spec.{js,ts,jsx,tsx}
-    ///   *.stories.{js,ts,jsx,tsx}
-    ///   *.story.{js,ts,jsx,tsx}
-    ///   __tests__/ directories
-    ///
-    /// Pass this flag to lint those files anyway.
     #[arg(long, default_value_t = false)]
     pub include_tests: bool,
 }
 
-/// Supported output formats for lint results.
+/// Supported output formats.
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
 pub enum OutputFormat {
     /// Human-readable text output (default).
     Text,
-    /// JSON array output, suitable for tooling integration.
+    /// JSON array, suitable for tooling integration.
     Json,
-    /// Self-contained HTML report with summary stats and issue table.
+    /// Self-contained HTML report.
     Html,
+    /// SARIF 2.1.0 — GitHub/GitLab/Azure DevOps inline annotations.
+    Sarif,
+}
+
+/// Rule category filter.
+#[derive(ValueEnum, Clone, Debug, PartialEq, Default)]
+pub enum Category {
+    /// Run all rules (perf + security).
+    #[default]
+    All,
+    /// Only React performance rules.
+    Perf,
+    /// Only React security rules.
+    Security,
+}
+
+/// Severity threshold for CI exit code.
+#[derive(ValueEnum, Clone, Debug, PartialEq)]
+pub enum FailOn {
+    /// Never fail based on severity (exit 1 if any issues found).
+    None,
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl FailOn {
+    /// Convert to the corresponding Severity threshold.
+    /// Returns None when FailOn::None (use default "any issue" logic).
+    pub fn as_severity(&self) -> Option<Severity> {
+        match self {
+            FailOn::None => None,
+            FailOn::Low => Some(Severity::Low),
+            FailOn::Medium => Some(Severity::Medium),
+            FailOn::High => Some(Severity::High),
+            FailOn::Critical => Some(Severity::Critical),
+        }
+    }
 }

@@ -18,6 +18,7 @@ use std::path::Path;
 
 use oxc_ast::ast::Program;
 
+use crate::cli::Category;
 use crate::rules::{all_rules, Issue, Rule, RuleContext};
 
 /// Run all registered lint rules against a single parsed file.
@@ -35,13 +36,14 @@ pub fn analyze(
     source_text: &str,
     file_path: &Path,
     max_component_lines: usize,
+    category: &Category,
 ) -> Vec<Issue> {
     analyze_with_rules(
         program,
         source_text,
         file_path,
         max_component_lines,
-        &all_rules(),
+        &all_rules(category),
     )
 }
 

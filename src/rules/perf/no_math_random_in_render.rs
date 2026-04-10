@@ -1,32 +1,31 @@
-//! rules/no_object_entries_in_render.rs — Detect Object.keys/values/entries in JSX props.
+//! rules/no_math_random_in_render.rs — Detect Math.random() / Date.now() in JSX props.
 //!
 //! # What this detects
 //!
-//! Calls to `Object.keys()`, `Object.values()`, or `Object.entries()` used
-//! directly as JSX prop values. These always return a new array reference,
-//! causing unnecessary child re-renders.
+//! Calls to `Math.random()` or `Date.now()` used directly as JSX prop values.
+//! These return a different value on every call, guaranteeing a re-render of
+//! the child on every parent render.
 //!
 //! ```jsx
-//! // ❌ New array on every render → child always re-renders
-//! <Select options={Object.entries(countryMap)} />
-//! <List items={Object.keys(config)} />
-//! <Table rows={Object.values(dataMap)} />
+//! // ❌ Different value every render — child always re-renders
+//! <Avatar seed={Math.random()} />
+//! <Timestamp value={Date.now()} />
 //!
-//! // ✅ Memoize
-//! const options = useMemo(() => Object.entries(countryMap), [countryMap]);
-//! <Select options={options} />
+//! // ✅ Generate once with useMemo or useState
+//! const seed = useMemo(() => Math.random(), []);
+//! <Avatar seed={seed} />
 //! ```
 //!
 //! # Why it's a problem
 //!
-//! `Object.keys/values/entries` always returns a brand-new array. Even if the
-//! object hasn't changed, the child receives a new array reference on every
-//! render, so `React.memo` and `PureComponent` comparisons always fail.
+//! Non-deterministic values change on every render. React's reconciler uses
+//! prop equality to skip child re-renders — a value that always changes defeats
+//! this entirely and can cause infinite loops if the child triggers parent state.
 //!
 //! # AST traversal strategy
 //!
-//! `visit_jsx_opening_element` → scan each attribute expression for a
-//! `CallExpression` with callee `Object.keys`, `Object.values`, or `Object.entries`.
+//! `visit_jsx_opening_element` → scan attribute expressions for calls to
+//! `Math.random` or `Date.now`.
 
 use std::path::Path;
 
@@ -41,15 +40,15 @@ use crate::{
 
 // ─── Rule struct ──────────────────────────────────────────────────────────────
 
-pub struct NoObjectEntriesInRender;
+pub struct NoMathRandomInRender;
 
-impl super::Rule for NoObjectEntriesInRender {
+impl super::Rule for NoMathRandomInRender {
     fn name(&self) -> &str {
-        "no_object_entries_in_render"
+        "no_math_random_in_render"
     }
 
     fn run(&self, ctx: &RuleContext<'_>) -> Vec<Issue> {
-        let mut visitor = ObjectEntriesVisitor {
+        let mut visitor = MathRandomVisitor {
             issues: Vec::new(),
             source_text: ctx.source_text,
             file_path: ctx.file_path,
@@ -61,13 +60,13 @@ impl super::Rule for NoObjectEntriesInRender {
 
 // ─── Visitor ──────────────────────────────────────────────────────────────────
 
-struct ObjectEntriesVisitor<'a> {
+struct MathRandomVisitor<'a> {
     issues: Vec<Issue>,
     source_text: &'a str,
     file_path: &'a Path,
 }
 
-impl<'a> Visit<'a> for ObjectEntriesVisitor<'_> {
+impl<'a> Visit<'a> for MathRandomVisitor<'_> {
     fn visit_jsx_opening_element(&mut self, elem: &JSXOpeningElement<'a>) {
         for attr_item in &elem.attributes {
             if let JSXAttributeItem::Attribute(attr) = attr_item {
@@ -82,12 +81,12 @@ impl<'a> Visit<'a> for ObjectEntriesVisitor<'_> {
     }
 }
 
-impl ObjectEntriesVisitor<'_> {
+impl MathRandomVisitor<'_> {
     fn scan_expr(&mut self, expr: &Expression<'_>) {
         match expr {
             Expression::CallExpression(call) => {
-                if let Some(method) = object_static_method(&call.callee) {
-                    self.emit(method, call.span);
+                if let Some(fn_name) = nondeterministic_call(&call.callee) {
+                    self.emit(fn_name, call.span);
                 }
             }
             Expression::ConditionalExpression(cond) => {
@@ -105,37 +104,39 @@ impl ObjectEntriesVisitor<'_> {
         }
     }
 
-    fn emit(&mut self, method: &str, span: Span) {
+    fn emit(&mut self, fn_name: &str, span: Span) {
         let (line, col) = offset_to_line_col(self.source_text, span.start);
         self.issues.push(Issue {
-            rule: "no_object_entries_in_render".to_string(),
+            rule: "no_math_random_in_render".to_string(),
             message: format!(
-                "`{method}()` in a JSX prop always returns a new array reference, causing \
-                 the child to re-render even when the object hasn't changed. \
-                 Wrap with useMemo: `const items = useMemo(() => {method}(obj), [obj])`"
+                "`{fn_name}()` in a JSX prop returns a different value on every render, \
+                 guaranteeing the child re-renders every time. \
+                 Generate once with useMemo or useState: \
+                 `const value = useMemo(() => {fn_name}(), [])`"
             ),
             file: self.file_path.to_path_buf(),
             line,
             column: col,
-            severity: Severity::Warning,
+            severity: Severity::Medium,
+            source: crate::rules::IssueSource::ReactPerfAnalyzer,
+            category: crate::rules::IssueCategory::Performance,
         });
     }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Returns the full method name if callee is `Object.keys`, `.values`, or `.entries`.
-fn object_static_method(callee: &Expression<'_>) -> Option<&'static str> {
+/// Returns the full name if callee is `Math.random` or `Date.now`.
+fn nondeterministic_call(callee: &Expression<'_>) -> Option<&'static str> {
     if let Expression::StaticMemberExpression(m) = callee {
         if let Expression::Identifier(obj) = &m.object {
-            if obj.name.as_str() == "Object" {
-                return match m.property.name.as_str() {
-                    "keys" => Some("Object.keys"),
-                    "values" => Some("Object.values"),
-                    "entries" => Some("Object.entries"),
-                    _ => None,
-                };
-            }
+            let obj_name = obj.name.as_str();
+            let prop_name = m.property.name.as_str();
+            return match (obj_name, prop_name) {
+                ("Math", "random") => Some("Math.random"),
+                ("Date", "now") => Some("Date.now"),
+                _ => None,
+            };
         }
     }
     None

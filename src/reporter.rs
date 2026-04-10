@@ -617,6 +617,59 @@ fn html_escape(s: &str) -> String {
 
 // ─── Summary helpers ──────────────────────────────────────────────────────────
 
+// ─── SARIF reporter ───────────────────────────────────────────────────────────
+
+/// Generate a SARIF 2.1.0 JSON string for GitHub/GitLab/Azure DevOps.
+///
+/// SARIF (Static Analysis Results Interchange Format) is the standard that
+/// lets CI platforms show inline annotations on PR diffs.
+pub fn report_sarif(issues: &[Issue], version: &str) -> String {
+    // Collect unique rule IDs for the tool.driver.rules array.
+    let mut seen_rules: Vec<&str> = vec![];
+    for issue in issues {
+        if !seen_rules.contains(&issue.rule.as_str()) {
+            seen_rules.push(issue.rule.as_str());
+        }
+    }
+
+    let rules_json: String = seen_rules
+        .iter()
+        .map(|r| format!(r#"{{"id":"{r}","shortDescription":{{"text":"{r}"}}}}"#,))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let results_json: String = issues
+        .iter()
+        .map(|issue| {
+            let level = match issue.severity {
+                crate::rules::Severity::Critical | crate::rules::Severity::High => "error",
+                crate::rules::Severity::Medium => "warning",
+                crate::rules::Severity::Low | crate::rules::Severity::Info => "note",
+            };
+            let msg = issue.message.replace('"', "\\\"");
+            let file = issue.file.display().to_string().replace('\\', "/");
+            format!(
+                r#"{{"ruleId":"{rule}","level":"{level}","message":{{"text":"{msg}"}},
+"locations":[{{"physicalLocation":{{"artifactLocation":{{"uri":"{file}","uriBaseId":"%SRCROOT%"}},
+"region":{{"startLine":{line},"startColumn":{col}}}}}}}]}}"#,
+                rule = issue.rule,
+                line = issue.line,
+                col = issue.column,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    format!(
+        r#"{{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json",
+"runs":[{{"tool":{{"driver":{{"name":"react-perf-analyzer","version":"{version}",
+"informationUri":"https://github.com/rashvish18/react-perf-analyzer",
+"rules":[{rules_json}]}}}},"results":[{results_json}]}}]}}"#
+    )
+}
+
+// ─── Summary helpers ──────────────────────────────────────────────────────────
+
 /// Print a concise summary of per-rule issue counts to stderr.
 ///
 /// Useful when `--format json` is used and you still want a human summary.

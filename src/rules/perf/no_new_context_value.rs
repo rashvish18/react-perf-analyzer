@@ -204,7 +204,9 @@ impl ContextValueVisitor<'_> {
             file: self.file_path.to_path_buf(),
             line,
             column: col,
-            severity: Severity::Warning,
+            severity: Severity::Medium,
+            source: crate::rules::IssueSource::ReactPerfAnalyzer,
+            category: crate::rules::IssueCategory::Performance,
         });
     }
 }
