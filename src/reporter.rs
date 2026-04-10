@@ -179,14 +179,30 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
         ("large_component", "#8b5cf6", "Large Component"),
         ("no_new_context_value", "#3b82f6", "New Context Value"),
         ("no_expensive_in_render", "#06b6d4", "Expensive in Render"),
-        ("no_component_in_component", "#ec4899", "Component in Component"),
+        (
+            "no_component_in_component",
+            "#ec4899",
+            "Component in Component",
+        ),
         ("no_unstable_hook_deps", "#f59e0b", "Unstable Hook Deps"),
         ("no_new_in_jsx_prop", "#10b981", "New in JSX Prop"),
-        ("no_use_state_lazy_init_missing", "#6366f1", "useState Lazy Init"),
+        (
+            "no_use_state_lazy_init_missing",
+            "#6366f1",
+            "useState Lazy Init",
+        ),
         ("no_json_in_render", "#14b8a6", "JSON in Render"),
-        ("no_object_entries_in_render", "#f43f5e", "Object.entries in Render"),
+        (
+            "no_object_entries_in_render",
+            "#f43f5e",
+            "Object.entries in Render",
+        ),
         ("no_regex_in_render", "#a855f7", "Regex in Render"),
-        ("no_math_random_in_render", "#0ea5e9", "Math.random in Render"),
+        (
+            "no_math_random_in_render",
+            "#0ea5e9",
+            "Math.random in Render",
+        ),
         ("no_useless_memo", "#84cc16", "Useless Memo"),
     ];
 

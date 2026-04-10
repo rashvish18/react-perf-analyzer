@@ -142,7 +142,9 @@ fn main() {
                     #[cfg(target_os = "macos")]
                     let _ = std::process::Command::new("open").arg(&abs_path).spawn();
                     #[cfg(target_os = "linux")]
-                    let _ = std::process::Command::new("xdg-open").arg(&abs_path).spawn();
+                    let _ = std::process::Command::new("xdg-open")
+                        .arg(&abs_path)
+                        .spawn();
                 }
                 Err(e) => {
                     eprintln!("Error writing HTML report to '{}': {e}", out_path.display());
