@@ -135,16 +135,11 @@ fn main() {
 
             match fs::write(&out_path, &html) {
                 Ok(_) => {
-                    // Resolve to an absolute path for the file:// URL.
                     let abs_path =
                         std::fs::canonicalize(&out_path).unwrap_or_else(|_| out_path.clone());
                     let file_url = format!("file://{}", abs_path.display());
-                    // OSC 8 hyperlink — clickable in VS Code terminal, iTerm2, etc.
-                    eprintln!(
-                        "✅ HTML report written to: {}\n   \x1b]8;;{}\x1b\\Open in browser\x1b]8;;\x1b\\",
-                        out_path.display(),
-                        file_url
-                    );
+                    eprintln!("✅ HTML report written to: {}", out_path.display());
+                    eprintln!("   {file_url}");
                 }
                 Err(e) => {
                     eprintln!("Error writing HTML report to '{}': {e}", out_path.display());
