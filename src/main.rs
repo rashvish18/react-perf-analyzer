@@ -14,6 +14,7 @@
 mod analyzer;
 mod cli;
 mod file_loader;
+mod orchestrator;
 mod parser;
 mod reporter;
 mod rules;
@@ -30,6 +31,7 @@ use crate::{
     analyzer::analyze,
     cli::{Cli, FailOn, OutputFormat},
     file_loader::collect_files,
+    orchestrator::run_external_tools,
     parser::parse_file,
     reporter::{report_html, report_json, report_sarif, report_text},
     rules::Issue,
@@ -81,6 +83,24 @@ fn main() {
             analyze(&program, &source_text, path, max_lines, &category)
         })
         .collect();
+
+    // ── Step 3b: Run external tools (oxlint, cargo-audit) ────────────────────
+    let ext = run_external_tools(&cli.path);
+
+    // Print tool status hints to stderr.
+    for tool in &ext.tools_run {
+        eprintln!("  ✅ {tool}");
+    }
+    for (tool, reason) in &ext.tools_skipped {
+        eprintln!("  ⚠  {tool}: {reason}");
+    }
+    if !ext.tools_run.is_empty() || !ext.tools_skipped.is_empty() {
+        eprintln!();
+    }
+
+    // Merge external issues with our own.
+    let mut all_issues = all_issues;
+    all_issues.extend(ext.issues);
 
     // ── Step 4: Report ────────────────────────────────────────────────────────
     let issue_count = match cli.format {

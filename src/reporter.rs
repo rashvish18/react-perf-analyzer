@@ -171,8 +171,9 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
 
     let max_bar = top_files.first().map(|(_, n)| *n).unwrap_or(1);
 
-    // Rule metadata: colour + friendly label (all 15 rules).
+    // Rule metadata: colour + friendly label (all rules).
     let rule_meta: &[(&str, &str, &str)] = &[
+        // ── Perf rules ──────────────────────────────────────────────────────
         ("unstable_props", "#f97316", "Unstable Props"),
         ("no_inline_jsx_fn", "#ef4444", "Inline JSX Function"),
         ("no_array_index_key", "#eab308", "Array Index Key"),
@@ -204,7 +205,51 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
             "Math.random in Render",
         ),
         ("no_useless_memo", "#84cc16", "Useless Memo"),
+        // ── Security rules ──────────────────────────────────────────────────
+        ("no_unsafe_href", "#dc2626", "Unsafe href"),
+        ("no_xss_via_jsx_prop", "#b91c1c", "XSS via JSX Prop"),
+        ("no_hardcoded_secret_in_jsx", "#7c3aed", "Hardcoded Secret"),
+        (
+            "no_dangerously_set_inner_html_unescaped",
+            "#be123c",
+            "Unsafe innerHTML",
+        ),
+        ("no_postmessage_wildcard", "#0369a1", "postMessage Wildcard"),
     ];
+
+    // Source metadata: colour + label for source badges.
+    fn source_badge(source: &crate::rules::IssueSource) -> (&'static str, &'static str) {
+        match source {
+            crate::rules::IssueSource::ReactPerfAnalyzer => ("#f97316", "react-perf-analyzer"),
+            crate::rules::IssueSource::OxcLinter => ("#3b82f6", "oxlint"),
+            crate::rules::IssueSource::CargoAudit => ("#dc2626", "cargo-audit"),
+        }
+    }
+
+    // Severity colour for badge in issue rows.
+    fn severity_color(sev: &crate::rules::Severity) -> &'static str {
+        match sev {
+            crate::rules::Severity::Critical => "#dc2626",
+            crate::rules::Severity::High => "#ea580c",
+            crate::rules::Severity::Medium => "#ca8a04",
+            crate::rules::Severity::Low => "#16a34a",
+            crate::rules::Severity::Info => "#6b7280",
+        }
+    }
+
+    // Per-source counts for the header stats.
+    let our_count = issues
+        .iter()
+        .filter(|i| matches!(i.source, crate::rules::IssueSource::ReactPerfAnalyzer))
+        .count();
+    let oxlint_count = issues
+        .iter()
+        .filter(|i| matches!(i.source, crate::rules::IssueSource::OxcLinter))
+        .count();
+    let audit_count = issues
+        .iter()
+        .filter(|i| matches!(i.source, crate::rules::IssueSource::CargoAudit))
+        .count();
 
     fn rule_color<'a>(rule: &str, meta: &[(&'a str, &'a str, &'a str)]) -> &'a str {
         meta.iter()
@@ -288,12 +333,20 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
         let mut rows = String::new();
         for issue in &sorted_issues {
             let color = rule_color(&issue.rule, rule_meta);
+            let sev_color = severity_color(&issue.severity);
+            let sev_label = issue.severity.to_string();
+            let (src_color, src_label) = source_badge(&issue.source);
             let msg = html_escape(&issue.message);
             rows.push_str(&format!(
                 r#"<tr data-rule="{rule}">
                   <td class="td-loc">{line}:{col}</td>
-                  <td><span class="badge" style="background:{color}">{rule}</span></td>
-                  <td class="td-msg">{msg}</td>
+                  <td>
+                    <span class="badge" style="background:{color}">{rule}</span>
+                    <span class="badge sev-badge" style="background:{sev_color}">{sev_label}</span>
+                  </td>
+                  <td class="td-msg">{msg}
+                    <span class="src-badge" style="border-color:{src_color};color:{src_color}">{src_label}</span>
+                  </td>
                 </tr>"#,
                 rule = issue.rule,
                 line = issue.line,
@@ -440,6 +493,10 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
   .td-msg {{ color: #cbd5e1; }}
   .badge {{ display: inline-block; font-family: monospace; font-size: 10px; font-weight: 600;
            color: white; border-radius: 4px; padding: 2px 6px; white-space: nowrap; }}
+  .sev-badge {{ margin-left: 4px; font-size: 10px; font-weight: 700; }}
+  .src-badge {{ display: inline-block; font-size: 10px; font-weight: 600;
+               border: 1px solid; border-radius: 4px; padding: 1px 5px;
+               margin-left: 6px; white-space: nowrap; vertical-align: middle; }}
 
   /* No results */
   #no-results {{ display: none; text-align: center; padding: 40px; color: #475569;
@@ -466,6 +523,9 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
     <div class="stat"><div class="stat-num">{total}</div><div class="stat-lbl">Total Issues</div></div>
     <div class="stat"><div class="stat-num" style="color:#38bdf8">{file_count}</div><div class="stat-lbl">Files Scanned</div></div>
     <div class="stat"><div class="stat-num" style="color:#a78bfa">{affected_files}</div><div class="stat-lbl">Files with Issues</div></div>
+    <div class="stat"><div class="stat-num" style="color:#f97316">{our_count}</div><div class="stat-lbl">React Rules</div></div>
+    <div class="stat"><div class="stat-num" style="color:#3b82f6">{oxlint_count}</div><div class="stat-lbl">oxlint</div></div>
+    <div class="stat"><div class="stat-num" style="color:#dc2626">{audit_count}</div><div class="stat-lbl">cargo-audit</div></div>
   </div>
 
   <!-- Rule breakdown -->
