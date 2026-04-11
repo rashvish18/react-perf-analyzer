@@ -9,11 +9,14 @@
 /// show everything in one unified view.
 ///
 /// Design principles:
+///   - Print "Running <tool>..." before each subprocess so the user sees progress
 ///   - If a tool is not in PATH → silently skip, print hint to stderr
 ///   - If a tool fails → print warning, return empty Vec (never crash)
 ///   - All subprocess output is captured; nothing bleeds to stdout
+use std::io::Write as _;
 use std::path::Path;
 use std::process::Command;
+use std::time::Instant;
 
 use crate::rules::{Issue, IssueCategory, IssueSource, Severity};
 
@@ -22,8 +25,6 @@ use crate::rules::{Issue, IssueCategory, IssueSource, Severity};
 pub struct OrchestratorResult {
     /// All issues from all external tools combined.
     pub issues: Vec<Issue>,
-    /// Tools that ran successfully.
-    pub tools_run: Vec<&'static str>,
     /// Tools that were skipped (not installed) or failed.
     pub tools_skipped: Vec<(&'static str, String)>,
 }
@@ -31,19 +32,29 @@ pub struct OrchestratorResult {
 /// Run all available external tools against `path` and return merged results.
 pub fn run_external_tools(path: &Path) -> OrchestratorResult {
     let mut all_issues: Vec<Issue> = vec![];
-    let mut tools_run = vec![];
-    let mut tools_skipped = vec![];
+    let mut tools_skipped: Vec<(&'static str, String)> = vec![];
 
     // ── oxlint ────────────────────────────────────────────────────────────────
+    eprint!("  🔍 Running oxlint...");
+    let _ = std::io::stderr().flush();
+    let t = Instant::now();
+
     match run_oxlint(path) {
         ToolResult::Ok(issues) => {
-            tools_run.push("oxlint");
+            let elapsed_ms = t.elapsed().as_millis();
+            let count = issues.len();
+            eprint!(
+                "\r  ✅ oxlint — {count} issue(s) in {elapsed_ms}ms{}\n",
+                " ".repeat(20)
+            );
             all_issues.extend(issues);
         }
         ToolResult::NotInstalled => {
+            eprint!("\r  ⚠  oxlint not found{}\n", " ".repeat(30));
             tools_skipped.push(("oxlint", "not found — install: npm i -g oxlint".into()));
         }
         ToolResult::Failed(msg) => {
+            eprint!("\r  ⚠  oxlint failed{}\n", " ".repeat(30));
             tools_skipped.push(("oxlint", format!("failed: {msg}")));
         }
     }
@@ -51,18 +62,29 @@ pub fn run_external_tools(path: &Path) -> OrchestratorResult {
     // ── cargo-audit ───────────────────────────────────────────────────────────
     // Only runs if a Cargo.lock file exists in the scanned path.
     if path.join("Cargo.lock").exists() {
+        eprint!("  🔍 Running cargo-audit...");
+        let _ = std::io::stderr().flush();
+        let t = Instant::now();
+
         match run_cargo_audit(path) {
             ToolResult::Ok(issues) => {
-                tools_run.push("cargo-audit");
+                let elapsed_ms = t.elapsed().as_millis();
+                let count = issues.len();
+                eprint!(
+                    "\r  ✅ cargo-audit — {count} issue(s) in {elapsed_ms}ms{}\n",
+                    " ".repeat(10)
+                );
                 all_issues.extend(issues);
             }
             ToolResult::NotInstalled => {
+                eprint!("\r  ⚠  cargo-audit not found{}\n", " ".repeat(20));
                 tools_skipped.push((
                     "cargo-audit",
                     "not found — install: cargo install cargo-audit".into(),
                 ));
             }
             ToolResult::Failed(msg) => {
+                eprint!("\r  ⚠  cargo-audit failed{}\n", " ".repeat(20));
                 tools_skipped.push(("cargo-audit", format!("failed: {msg}")));
             }
         }
@@ -70,7 +92,6 @@ pub fn run_external_tools(path: &Path) -> OrchestratorResult {
 
     OrchestratorResult {
         issues: all_issues,
-        tools_run,
         tools_skipped,
     }
 }

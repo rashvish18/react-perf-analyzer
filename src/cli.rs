@@ -85,6 +85,15 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub baseline: Option<PathBuf>,
 
+    /// Skip running external tools (oxlint, cargo-audit).
+    ///
+    /// By default react-perf-analyzer runs oxlint and cargo-audit as
+    /// subprocesses to give a unified view. Use this flag to skip them and
+    /// run only the built-in React rules — useful when you just want a fast
+    /// scan without waiting for npm/Node.js startup.
+    #[arg(long, default_value_t = false)]
+    pub no_external: bool,
+
     /// Path to a TOML file containing custom lint rules.
     ///
     /// If not specified, the tool auto-discovers `react-perf-rules.toml`

@@ -3,9 +3,11 @@
 /// Pipeline:
 ///   1. Parse CLI arguments
 ///   2. Collect JS/TS/JSX files
-///   3. Parse + analyze files in parallel (rayon + oxc)
-///   4. Report results (text / json / html / sarif)
-///   5. Exit with code based on --fail-on threshold
+///   3. Parse + analyze files in parallel (rayon + oxc)  ← live progress
+///   4. Run external tools (oxlint, cargo-audit)          ← live progress
+///   5. Apply baseline / custom rules
+///   6. Report results (text / json / html / sarif)
+///   7. Exit with code based on --fail-on threshold
 ///
 /// Exit codes:
 ///   0 — no issues found (or all below --fail-on threshold)
@@ -24,6 +26,9 @@ mod rules;
 mod utils;
 
 use std::fs;
+use std::io::Write as _;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use clap::Parser as ClapParser;
@@ -43,25 +48,50 @@ use crate::{
     rules::Issue,
 };
 
+fn fmt_ms(ms: u128) -> String {
+    if ms >= 1000 {
+        format!("{:.2}s", ms as f64 / 1000.0)
+    } else {
+        format!("{ms}ms")
+    }
+}
+
 fn main() {
     // ── Step 1: Parse CLI arguments ───────────────────────────────────────────
     let cli = Cli::parse();
+    let total_start = Instant::now();
+
+    // Banner
+    eprintln!("react-perf-analyzer v{}", env!("CARGO_PKG_VERSION"));
+    eprintln!("Scanning: {}", cli.path.display());
+    eprintln!();
 
     // ── Step 2: Collect files ─────────────────────────────────────────────────
-    let start = Instant::now();
+    eprint!("  📂 Discovering files...");
+    let _ = std::io::stderr().flush();
+    let t = Instant::now();
     let files = collect_files(&cli.path, cli.include_tests);
+    let discover_ms = t.elapsed().as_millis();
 
     if files.is_empty() {
-        eprintln!("No JS/TS/JSX files found under '{}'.", cli.path.display());
+        eprintln!(
+            "\r  ⚠  No JS/TS/JSX files found under '{}'.",
+            cli.path.display()
+        );
         std::process::exit(0);
     }
+    eprintln!(
+        "\r  📂 Found {} file(s) in {}{}",
+        files.len(),
+        fmt_ms(discover_ms),
+        " ".repeat(20)
+    );
 
     // ── Step 2b: Filter to changed files if --only-changed ────────────────────
     let files = if cli.only_changed {
         let changed = get_changed_files(&cli.path);
         if changed.is_empty() {
-            // Either not a git repo (warning already printed) or zero changes.
-            eprintln!("✓ No changed JS/TS/JSX files — nothing to analyze.");
+            eprintln!("  ✓ No changed JS/TS/JSX files — nothing to analyze.");
             std::process::exit(0);
         }
         let changed_set: std::collections::HashSet<_> = changed.into_iter().collect();
@@ -70,11 +100,11 @@ fn main() {
             .filter(|f| changed_set.contains(f.as_path()))
             .collect();
         if filtered.is_empty() {
-            eprintln!("✓ No changed JS/TS/JSX files in scope — nothing to analyze.");
+            eprintln!("  ✓ No changed JS/TS/JSX files in scope — nothing to analyze.");
             std::process::exit(0);
         }
         eprintln!(
-            "⚡ --only-changed: analyzing {} changed file(s)",
+            "  ⚡ --only-changed: {} changed file(s) to analyze",
             filtered.len()
         );
         filtered
@@ -88,7 +118,6 @@ fn main() {
 
     // ── Step 2c: Load custom rules (TOML DSL) ────────────────────────────────
     let custom_rule_set: Vec<custom_rules::CompiledRule> = {
-        // Explicit --rules path takes precedence; otherwise auto-discover.
         let rules_path = cli
             .rules
             .clone()
@@ -97,11 +126,11 @@ fn main() {
             Some(ref p) => {
                 let (compiled, errors) = load_custom_rules(p);
                 for err in &errors {
-                    eprintln!("⚠  custom rule: {err}");
+                    eprintln!("  ⚠  custom rule: {err}");
                 }
                 if !compiled.is_empty() {
                     eprintln!(
-                        "  📏 Custom rules loaded: {} rule(s) from '{}'",
+                        "  📏 Custom rules: {} rule(s) from '{}'",
                         compiled.len(),
                         p.display()
                     );
@@ -113,13 +142,32 @@ fn main() {
     };
 
     // ── Step 3: Parallel parse + analyze ─────────────────────────────────────
+    // Spin up a progress thread that writes live "X/N" counts with \r.
+    let processed = Arc::new(AtomicUsize::new(0));
+    let done_flag = Arc::new(AtomicBool::new(false));
+
+    let prog_count = processed.clone();
+    let prog_done = done_flag.clone();
+
+    let progress_thread = std::thread::spawn(move || loop {
+        if prog_done.load(Ordering::Relaxed) {
+            break;
+        }
+        let n = prog_count.load(Ordering::Relaxed);
+        eprint!("\r  🔬 Analyzing files  {n}/{file_count}");
+        let _ = std::io::stderr().flush();
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    });
+
+    let t = Instant::now();
     let all_issues: Vec<Issue> = files
         .par_iter()
         .flat_map(|path| {
             let source_text = match fs::read_to_string(path) {
                 Ok(s) => s,
                 Err(err) => {
-                    eprintln!("Warning: could not read '{}': {err}", path.display());
+                    eprintln!("\n  Warning: could not read '{}': {err}", path.display());
+                    processed.fetch_add(1, Ordering::Relaxed);
                     return vec![];
                 }
             };
@@ -130,40 +178,49 @@ fn main() {
                 Ok(p) => p,
                 Err(err) => {
                     eprintln!(
-                        "Warning: failed to parse '{}': {}",
+                        "\n  Warning: failed to parse '{}': {}",
                         err.file,
                         err.messages.join("; ")
                     );
+                    processed.fetch_add(1, Ordering::Relaxed);
                     return vec![];
                 }
             };
 
             let mut file_issues = analyze(&program, &source_text, path, max_lines, &category);
-            // Run custom TOML rules on the same source text.
             if !custom_rule_set.is_empty() {
                 file_issues.extend(run_custom_rules(&custom_rule_set, &source_text, path));
             }
+            processed.fetch_add(1, Ordering::Relaxed);
             file_issues
         })
         .collect();
 
+    // Stop progress thread and clear line.
+    done_flag.store(true, Ordering::Relaxed);
+    let _ = progress_thread.join();
+    let analyze_ms = t.elapsed().as_millis();
+    eprint!(
+        "\r  ✅ Analyzed {file_count} file(s) — {} issue(s) in {}{}",
+        all_issues.len(),
+        fmt_ms(analyze_ms),
+        " ".repeat(20)
+    );
+    eprintln!();
+
     // ── Step 3b: Run external tools (oxlint, cargo-audit) ────────────────────
-    let ext = run_external_tools(&cli.path);
-
-    // Print tool status hints to stderr.
-    for tool in &ext.tools_run {
-        eprintln!("  ✅ {tool}");
-    }
-    for (tool, reason) in &ext.tools_skipped {
-        eprintln!("  ⚠  {tool}: {reason}");
-    }
-    if !ext.tools_run.is_empty() || !ext.tools_skipped.is_empty() {
-        eprintln!();
-    }
-
-    // Merge external issues with our own.
     let mut all_issues = all_issues;
-    all_issues.extend(ext.issues);
+
+    if !cli.no_external {
+        let ext = run_external_tools(&cli.path);
+        // Print skipped tool hints.
+        for (tool, reason) in &ext.tools_skipped {
+            eprintln!("  ⚠  {tool}: {reason}");
+        }
+        all_issues.extend(ext.issues);
+    } else {
+        eprintln!("  ⏭  External tools skipped (--no-external)");
+    }
 
     // ── Step 3c: Apply baseline (suppress known issues) ───────────────────────
     let all_issues = if let Some(ref baseline_path) = cli.baseline {
@@ -172,6 +229,8 @@ fn main() {
     } else {
         all_issues
     };
+
+    eprintln!();
 
     // ── Step 4: Report ────────────────────────────────────────────────────────
     let issue_count = match cli.format {
@@ -198,7 +257,7 @@ fn main() {
                 Ok(_) => {
                     let abs_path =
                         std::fs::canonicalize(&out_path).unwrap_or_else(|_| out_path.clone());
-                    eprintln!("✅ HTML report written to: {}", out_path.display());
+                    eprintln!("✅ HTML report → {}", out_path.display());
                     #[cfg(target_os = "macos")]
                     let _ = std::process::Command::new("open").arg(&abs_path).spawn();
                     #[cfg(target_os = "linux")]
@@ -220,7 +279,7 @@ fn main() {
                 .clone()
                 .unwrap_or_else(|| std::path::PathBuf::from("results.sarif"));
             match fs::write(&out_path, &sarif) {
-                Ok(_) => eprintln!("✅ SARIF report written to: {}", out_path.display()),
+                Ok(_) => eprintln!("✅ SARIF report → {}", out_path.display()),
                 Err(e) => {
                     eprintln!("Error writing SARIF to '{}': {e}", out_path.display());
                     std::process::exit(2);
@@ -230,20 +289,12 @@ fn main() {
         }
     };
 
-    // ── Step 5: Elapsed time ──────────────────────────────────────────────────
-    let elapsed = start.elapsed();
-    let elapsed_str = if elapsed.as_secs() >= 1 {
-        format!("{:.2}s", elapsed.as_secs_f64())
-    } else {
-        format!("{}ms", elapsed.as_millis())
-    };
+    // ── Step 5: Summary line ──────────────────────────────────────────────────
+    let total_ms = total_start.elapsed().as_millis();
     eprintln!(
-        "\nScanned {file_count} file(s){} in {elapsed_str}.",
-        if issue_count > 0 {
-            format!(", found {issue_count} issue(s)")
-        } else {
-            String::new()
-        }
+        "\n{} issue(s) found across {file_count} file(s) — total {}",
+        issue_count,
+        fmt_ms(total_ms),
     );
 
     // ── Step 6: Exit code ─────────────────────────────────────────────────────
