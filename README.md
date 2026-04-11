@@ -5,272 +5,203 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/rashvish18/react-perf-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/rashvish18/react-perf-analyzer/actions/workflows/ci.yml)
 
-A high-performance Rust CLI that detects React performance anti-patterns in JS/TS/JSX files using deep AST analysis.
+**React performance + security scanner. Single binary. Zero config. SARIF output.**
 
 > ⚡ Powered by [OXC](https://oxc-project.github.io/) — the fastest JS/TS parser in the ecosystem.
 
-Built with [OXC](https://oxc-project.github.io/) (Rust-native JS/TS parser), [Rayon](https://github.com/rayon-rs/rayon) for parallel file processing, and [clap](https://github.com/clap-rs/clap) for the CLI.
+`react-perf-analyzer` is the orchestration layer for React quality:
 
----
-
-## Rules
-
-| Rule | What it detects |
-|---|---|
-| `no_inline_jsx_fn` | Inline arrow/function expressions in JSX props — creates a new function reference on every render |
-| `unstable_props` | Object/array literals in JSX props — creates a new reference on every render |
-| `large_component` | React components exceeding a configurable logical-line threshold |
-| `no_new_context_value` | Object/array/function passed as `Context.Provider value` — causes all consumers to re-render |
-| `no_array_index_key` | Array index used as JSX `key` prop — breaks reconciliation on list mutations |
-| `no_expensive_in_render` | `.sort()` / `.filter()` / `.reduce()` / `.find()` / `.flatMap()` called directly in JSX props without `useMemo` |
+```
+oxc_linter   → 400+ general JS/TS rules       (called automatically)
+cargo-audit  → CVE scanning for Rust deps      (called if Cargo.lock found)
+OUR RULES    → React-specific perf + security  (what no other tool covers)
+OUR REPORT   → Unified HTML + SARIF across all sources in one command
+```
 
 ---
 
 ## Installation
 
-### From crates.io (recommended)
-
 ```bash
 cargo install react-perf-analyzer
 ```
 
-### Build from source
-
-```bash
-git clone https://github.com/rashvish18/react-perf-analyzer
-cd react-perf-analyzer
-cargo build --release
-```
-
-The binary is at `./target/release/react-perf-analyzer`.
+Or download a pre-built binary from [Releases](https://github.com/rashvish18/react-perf-analyzer/releases).
 
 ---
 
-## Usage
+## Quick start
 
+```bash
+# Scan a project (text output)
+react-perf-analyzer ./src
+
+# HTML report (auto-opens in browser)
+react-perf-analyzer ./src --format html
+
+# SARIF output for GitHub/GitLab inline PR annotations
+react-perf-analyzer ./src --format sarif --output results.sarif
+
+# CI gate — fail only on high/critical issues
+react-perf-analyzer ./src --fail-on high
+
+# Pre-commit mode — only scan changed files (<10 ms)
+react-perf-analyzer ./src --only-changed --fail-on high
+
+# Suppress known issues with a baseline
+react-perf-analyzer ./src --baseline .sast-baseline.json --fail-on high
+
+# Custom TOML rules (no Rust required)
+react-perf-analyzer ./src --rules react-perf-rules.toml
 ```
-react-perf-analyzer [OPTIONS] <PATH>
-```
 
-### Arguments
+---
 
-| Argument | Description |
+## Rules
+
+### Performance (15 rules)
+
+| Rule | What it detects |
 |---|---|
-| `<PATH>` | File or directory to scan (recursively) |
+| `no_inline_jsx_fn` | Inline arrow/function expressions in JSX props |
+| `unstable_props` | Object/array literals in JSX props (new ref every render) |
+| `large_component` | Components exceeding configurable line threshold |
+| `no_new_context_value` | Object/array/function in Context.Provider value |
+| `no_array_index_key` | Array index used as JSX `key` prop |
+| `no_expensive_in_render` | `.sort()/.filter()/.reduce()` in JSX props without `useMemo` |
+| `no_component_in_component` | Component definitions nested inside another component |
+| `no_unstable_hook_deps` | Unstable objects/arrays in `useEffect`/`useCallback` deps array |
+| `no_new_in_jsx_prop` | `new` expressions in JSX props |
+| `no_use_state_lazy_init_missing` | `useState(expensiveCall())` without lazy initializer |
+| `no_json_in_render` | `JSON.parse()` / `JSON.stringify()` inside render |
+| `no_object_entries_in_render` | `Object.entries()` / `Object.keys()` without `useMemo` |
+| `no_regex_in_render` | RegExp literals created in render |
+| `no_math_random_in_render` | `Math.random()` called on every render |
+| `no_useless_memo` | `useMemo` around a primitive value |
 
-### Options
+### Security (5 rules)
+
+| Rule | Severity | What it detects |
+|---|---|---|
+| `no_unsafe_href` | Critical/Medium | `javascript:` URLs and dynamic `href`/`src`/`action` props |
+| `no_xss_via_jsx_prop` | High | Unescaped `req.query`/`req.body`/`req.params` in JSX props |
+| `no_hardcoded_secret_in_jsx` | High | High-entropy secrets in JSX props and variable declarations |
+| `no_dangerously_set_inner_html_unescaped` | High | `dangerouslySetInnerHTML` without a safe sanitizer |
+| `no_postmessage_wildcard` | Medium | `postMessage(data, "*")` without origin restriction |
+
+---
+
+## Options
 
 | Flag | Default | Description |
 |---|---|---|
-| `--format <FORMAT>` | `text` | Output format: `text`, `json`, or `html` |
-| `--output <FILE>` | stdout | Write output to a file instead of stdout |
-| `--max-component-lines <N>` | `300` | Line threshold for the `large_component` rule |
+| `--format` | `text` | Output: `text` \| `json` \| `html` \| `sarif` |
+| `--output <FILE>` | stdout | Write output to file |
+| `--category` | `all` | Rule category: `all` \| `perf` \| `security` |
+| `--fail-on` | `none` | Severity gate: `none` \| `low` \| `medium` \| `high` \| `critical` |
+| `--only-changed` | off | Only analyze git-changed files (pre-commit mode) |
+| `--baseline <FILE>` | — | Suppress known issues; fail only on new regressions |
+| `--rules <FILE>` | auto | TOML file with custom lint rules (no Rust required) |
+| `--max-component-lines` | `300` | Line threshold for `large_component` rule |
 | `--include-tests` | off | Include `*.test.*`, `*.spec.*`, `*.stories.*` files |
 
 ---
 
-## Examples
+## CI Integration
 
-### Scan a single file
+### GitHub Actions
 
-```bash
-react-perf-analyzer src/components/UserCard.tsx
+```yaml
+- name: React Perf + Security Scan
+  uses: rashvish18/react-perf-analyzer@v0.5
+  with:
+    path: './src'
+    fail-on: 'high'
+    upload-sarif: 'true'   # Shows inline PR annotations
 ```
 
-### Scan a full project
+Or use the bundled workflow directly:
 
-```bash
-react-perf-analyzer ./src
+```yaml
+# .github/workflows/scan.yml
+jobs:
+  scan:
+    uses: rashvish18/react-perf-analyzer/.github/workflows/react-perf-analyzer.yml@main
 ```
 
-### Scan an entire monorepo
+### pre-commit hook
 
 ```bash
-react-perf-analyzer /path/to/monorepo
+pip install pre-commit
+# Copy .pre-commit-config.yaml from this repo into your project
+pre-commit install
 ```
 
-`node_modules`, `dist`, `build`, and hidden directories are automatically skipped.
+The hook runs `--only-changed` so only modified files are scanned on each commit.
 
-### Tune the component size threshold
+### GitLab CI
 
-```bash
-react-perf-analyzer ./src --max-component-lines 150
+```yaml
+include:
+  - project: 'rashvish18/react-perf-analyzer'
+    file: '.github/workflows/gitlab-ci-template.yml'
 ```
 
-### JSON output (for CI or tooling)
+---
+
+## Baseline Mode
+
+Suppress known issues so CI only fails on new regressions:
 
 ```bash
-react-perf-analyzer ./src --format json > results.json
+# 1. Generate baseline (commit this file)
+react-perf-analyzer ./src --format json --output .sast-baseline.json
+
+# 2. Use in CI
+react-perf-analyzer ./src --baseline .sast-baseline.json --fail-on high
 ```
 
-### HTML report (shareable, self-contained)
+---
+
+## Custom Rules (TOML DSL)
+
+Define team-specific rules without writing Rust. Create `react-perf-rules.toml`:
+
+```toml
+[[rule]]
+id        = "no-console-log"
+message   = "Remove console.log() before merging"
+severity  = "medium"
+category  = "perf"
+pattern   = "console\\.log\\s*\\("
+file_glob = "src/**/*.{ts,tsx}"
+ignore_if = "//\\s*nolint"
+
+[[rule]]
+id       = "no-inner-html"
+message  = "Direct innerHTML causes XSS — use DOMPurify"
+severity = "high"
+category = "security"
+pattern  = "\\.innerHTML\\s*="
+```
+
+The file is auto-discovered in your project root. See `react-perf-rules.toml.example` for more examples.
+
+---
+
+## HTML Report
+
+The self-contained HTML report includes:
+
+- **6 stat tiles** — Total Issues, Files Scanned, Files with Issues, React Rules, oxlint, cargo-audit
+- **Per-rule cards** — click to filter the issue table
+- **Top 10 files bar chart** — click bars to jump to file section
+- **Collapsible issue table** — severity + source badge on every row
+- **Search** — filter by filename in real time
 
 ```bash
-# Generates react-perf-report.html in the current directory
 react-perf-analyzer ./src --format html
-
-# Custom output path
-react-perf-analyzer ./src --format html --output /tmp/my-report.html
-```
-
-The HTML report includes:
-- **Summary cards** — total issues, files scanned, files with issues
-- **Per-rule breakdown** — colour-coded issue counts for each rule
-- **Top 10 files bar chart** — quickly spot the worst offenders
-- **Collapsible issue table** — all issues grouped by file with inline rule badges
-
-No CDN dependencies — the output is a single self-contained `.html` file.
-
----
-
-## Sample output
-
-### Text format (default)
-
-```
-src/components/UserCard.tsx:14:17  warning  unstable_props          Object literal in 'style' prop creates a new reference on every render.
-src/components/UserCard.tsx:21:24  warning  no_inline_jsx_fn        Inline arrow function in 'onClick' prop. Wrap with useCallback.
-src/pages/Dashboard.tsx:1:1        warning  large_component         Component 'Dashboard' is 340 lines (310 logical) — limit is 300.
-src/contexts/Theme.tsx:12:30       warning  no_new_context_value    Context Provider 'value' receives a new object literal on every render.
-src/lists/UserList.tsx:8:18        warning  no_array_index_key      Array index used as 'key' prop.
-src/tables/DataGrid.tsx:45:30      warning  no_expensive_in_render  `.filter()` called directly in render — wrap with useMemo.
-
-✖ 6 issues found
-
-Scanned 42 file(s), found 6 issue(s).
-```
-
-### HTML report
-
-```bash
-react-perf-analyzer ./src --format html --output report.html
-# ✅ HTML report written to: report.html
-```
-
-Open `report.html` in any browser — share it with your team, attach it to a Jira ticket, or archive it as a performance snapshot.
-
----
-
-## Rule details
-
-### `no_inline_jsx_fn`
-
-Detects inline functions passed as JSX props that create a new reference on every render, breaking `React.memo` and `shouldComponentUpdate` optimizations.
-
-**Detects:**
-- `onClick={() => doSomething()}`
-- `onChange={function(e) { ... }}`
-- Functions inside ternaries: `onClick={flag ? () => a() : () => b()}`
-
-**Ignores:** `useCallback`-wrapped and `useMemo`-wrapped functions
-
-**Fix:**
-```jsx
-// ❌ Before
-<Button onClick={() => handleDelete(id)} />
-
-// ✅ After
-const handleDelete = useCallback(() => deleteItem(id), [id]);
-<Button onClick={handleDelete} />
-```
-
----
-
-### `unstable_props`
-
-Detects object and array literals passed directly as JSX prop values. In JavaScript, `{a:1} === {a:1}` is `false` — a new reference on every render defeats `React.memo`.
-
-**Detects:** `style={{ color: "red" }}`, `columns={["id", "name"]}`, literals in ternaries / logical expressions
-
-**Ignores:** `useMemo`-wrapped values, stable variable references
-
-**Fix:**
-```jsx
-// ❌ Before
-<DataTable columns={["id", "name"]} style={{ fontSize: 14 }} />
-
-// ✅ After
-const COLUMNS = ["id", "name"];
-const style = useMemo(() => ({ fontSize }), [fontSize]);
-<DataTable columns={COLUMNS} style={style} />
-```
-
----
-
-### `large_component`
-
-Flags React components whose logical line count exceeds the configured threshold (default 300). Reports total lines, logical lines, JSX element count, and hook count.
-
-**Fix:** Extract sub-components and custom hooks by concern.
-
----
-
-### `no_new_context_value`
-
-Detects object/array literals or inline functions passed as the `value` prop to a React Context Provider. Every render creates a new reference → all consumers re-render even when the data hasn't changed.
-
-**Detects:**
-```jsx
-// ❌ New object every render → ALL consumers re-render
-<ThemeContext.Provider value={{ theme, toggle }} />
-
-// ❌ New array every render
-<UserContext.Provider value={[user, setUser]} />
-```
-
-**Fix:**
-```jsx
-// ✅ Stable reference via useMemo
-const value = useMemo(() => ({ theme, toggle }), [theme]);
-<ThemeContext.Provider value={value} />
-```
-
----
-
-### `no_array_index_key`
-
-Detects `.map()` callbacks that use the array index as the JSX `key` prop. When items are inserted, removed, or reordered, React matches elements by key — an index key causes incorrect component reuse and broken state (inputs, focus, animations).
-
-**Detects:**
-```jsx
-// ❌ index as key
-items.map((item, index) => <li key={index}>{item.name}</li>)
-items.map((item, i) => <Row key={i} />)
-items.map((item, idx) => <Card key={`card-${idx}`} />)
-```
-
-**Fix:**
-```jsx
-// ✅ Stable ID from data
-items.map((item) => <li key={item.id}>{item.name}</li>)
-```
-
----
-
-### `no_expensive_in_render`
-
-Detects expensive array operations (`.sort()`, `.filter()`, `.reduce()`, `.find()`, `.findIndex()`, `.flatMap()`) called directly in JSX attribute values without `useMemo`. These recompute on every render, including renders triggered by unrelated state changes.
-
-**Detects:**
-```jsx
-// ❌ filter() runs on every render
-<UserList users={allUsers.filter(u => u.active)} />
-
-// ❌ sort() runs and mutates on every render
-<Leaderboard scores={scores.sort((a, b) => b - a)} />
-
-// ❌ Even inside a ternary
-<List items={loaded ? items.filter(isVisible) : []} />
-```
-
-**Fix:**
-```jsx
-// ✅ Memoized — only recomputes when allUsers changes
-const activeUsers = useMemo(() => allUsers.filter(u => u.active), [allUsers]);
-<UserList users={activeUsers} />
-
-// ✅ Or inline useMemo in the prop
-<Leaderboard scores={useMemo(() => [...scores].sort((a, b) => b - a), [scores])} />
+# ✅ HTML report written to: react-perf-report.html  (auto-opens on macOS)
 ```
 
 ---
@@ -279,15 +210,9 @@ const activeUsers = useMemo(() => allUsers.filter(u => u.active), [allUsers]);
 
 | Code | Meaning |
 |---|---|
-| `0` | No issues found |
-| `1` | One or more issues found |
+| `0` | No issues (or all below `--fail-on` threshold) |
+| `1` | Issues found at or above `--fail-on` threshold |
 | `2` | Fatal error (path not found, write error) |
-
-CI usage:
-
-```bash
-react-perf-analyzer ./src || echo "Performance issues detected — failing build"
-```
 
 ---
 
@@ -295,56 +220,34 @@ react-perf-analyzer ./src || echo "Performance issues detected — failing build
 
 ```
 src/
-├── main.rs          # Entry point — Rayon parallel file pipeline
-├── cli.rs           # clap CLI definitions (path, format, output, thresholds)
-├── file_loader.rs   # Recursive file discovery (walkdir)
-├── parser.rs        # OXC JS/TS/JSX parser wrapper
-├── analyzer.rs      # Runs all rules against a parsed AST
-├── reporter.rs      # Text, JSON, and HTML output formatters
-├── utils.rs         # Byte offset → line/column helper
+├── main.rs             # Entry point — parallel pipeline + orchestration
+├── cli.rs              # clap CLI flags
+├── file_loader.rs      # Recursive file discovery (walkdir)
+├── parser.rs           # OXC JS/TS/JSX parser wrapper
+├── analyzer.rs         # Runs built-in rules against parsed AST
+├── orchestrator.rs     # Runs oxlint + cargo-audit as subprocesses
+├── baseline.rs         # Baseline load/filter (suppress known issues)
+├── changed_files.rs    # Git-modified file detection (--only-changed)
+├── custom_rules.rs     # TOML rule DSL engine (regex line scanner)
+├── reporter.rs         # Text / JSON / HTML / SARIF output
+├── utils.rs            # Byte offset → line/column
 └── rules/
-    ├── mod.rs                    # Rule trait, Issue/Severity types, registry
-    ├── no_inline_jsx_fn.rs       # Rule 1
-    ├── unstable_props.rs         # Rule 2
-    ├── large_component.rs        # Rule 3
-    ├── no_new_context_value.rs   # Rule 4
-    ├── no_array_index_key.rs     # Rule 5
-    └── no_expensive_in_render.rs # Rule 6
+    ├── mod.rs          # Rule trait, Issue, Severity, IssueSource
+    ├── perf/           # 15 React performance rules
+    └── security/
+        └── react/      # 5 React security rules
 ```
-
-**Key dependencies:**
-
-| Crate | Purpose |
-|---|---|
-| `oxc_parser` / `oxc_ast` / `oxc_ast_visit` | Rust-native JS/TS/JSX parser and AST |
-| `rayon` | Data-parallel file processing |
-| `walkdir` | Recursive directory traversal |
-| `clap` | CLI argument parsing |
-| `serde` / `serde_json` | JSON output serialization |
 
 ---
 
-## Test fixtures
+## Contributing
 
 ```bash
-# Rule 1 — inline functions
-react-perf-analyzer ./test_fixtures/inline_fn_cases.tsx
-
-# Rule 2 — unstable props
-react-perf-analyzer ./test_fixtures/unstable_props_cases.tsx
-
-# Rule 3 — large components
-react-perf-analyzer ./test_fixtures/large_component_cases.tsx --max-component-lines 20
-
-# Rule 4 — context value
-react-perf-analyzer ./test_fixtures/no_new_context_value_cases.tsx
-
-# Rule 5 — array index key
-react-perf-analyzer ./test_fixtures/no_array_index_key_cases.tsx
-
-# Rule 6 — expensive in render
-react-perf-analyzer ./test_fixtures/no_expensive_in_render_cases.tsx
-
-# Zero issues — stable, well-written component
-react-perf-analyzer ./test_fixtures/good_component.tsx
+git clone https://github.com/rashvish18/react-perf-analyzer
+cd react-perf-analyzer
+cargo build
+cargo test
+cargo clippy -- -D warnings
 ```
+
+PRs welcome! See `SAST_PLAN.md` for the roadmap.

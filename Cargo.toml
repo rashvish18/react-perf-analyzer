@@ -1,13 +1,16 @@
 [package]
 name = "react-perf-analyzer"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
-description = "Static analysis CLI for React performance anti-patterns"
+description = "React performance + security scanner. Finds perf anti-patterns, XSS, secrets, and CVEs. Single binary, zero config, SARIF output."
 license = "MIT"
 repository = "https://github.com/rashvish18/react-perf-analyzer"
 homepage = "https://github.com/rashvish18/react-perf-analyzer"
-keywords = ["react", "performance", "linter", "cli", "oxc"]
+documentation = "https://github.com/rashvish18/react-perf-analyzer#readme"
+readme = "README.md"
+keywords = ["react", "security", "linter", "sast", "oxc"]
 categories = ["command-line-utilities", "development-tools"]
+exclude = ["test_fixtures/", "*.sarif", "react-perf-report.html"]
 
 [[bin]]
 name = "react-perf-analyzer"
