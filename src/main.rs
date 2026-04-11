@@ -12,6 +12,7 @@
 ///   1 — issues found at or above --fail-on threshold
 ///   2 — fatal error (path not found, write error)
 mod analyzer;
+mod changed_files;
 mod cli;
 mod file_loader;
 mod orchestrator;
@@ -29,6 +30,7 @@ use rayon::prelude::*;
 
 use crate::{
     analyzer::analyze,
+    changed_files::get_changed_files,
     cli::{Cli, FailOn, OutputFormat},
     file_loader::collect_files,
     orchestrator::run_external_tools,
@@ -49,6 +51,32 @@ fn main() {
         eprintln!("No JS/TS/JSX files found under '{}'.", cli.path.display());
         std::process::exit(0);
     }
+
+    // ── Step 2b: Filter to changed files if --only-changed ────────────────────
+    let files = if cli.only_changed {
+        let changed = get_changed_files(&cli.path);
+        if changed.is_empty() {
+            // Either not a git repo (warning already printed) or zero changes.
+            eprintln!("✓ No changed JS/TS/JSX files — nothing to analyze.");
+            std::process::exit(0);
+        }
+        let changed_set: std::collections::HashSet<_> = changed.into_iter().collect();
+        let filtered: Vec<_> = files
+            .into_iter()
+            .filter(|f| changed_set.contains(f.as_path()))
+            .collect();
+        if filtered.is_empty() {
+            eprintln!("✓ No changed JS/TS/JSX files in scope — nothing to analyze.");
+            std::process::exit(0);
+        }
+        eprintln!(
+            "⚡ --only-changed: analyzing {} changed file(s)",
+            filtered.len()
+        );
+        filtered
+    } else {
+        files
+    };
 
     let file_count = files.len();
     let max_lines = cli.max_component_lines;

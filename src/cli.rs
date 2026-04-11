@@ -65,6 +65,28 @@ pub struct Cli {
     /// Include test and Storybook files in the analysis.
     #[arg(long, default_value_t = false)]
     pub include_tests: bool,
+
+    /// Only analyze files that have changed in git (staged + unstaged).
+    ///
+    /// Designed for pre-commit hooks — typically completes in <10 ms because
+    /// only modified files are parsed and analyzed. Ignored if the current
+    /// directory is not inside a git repository (falls back to full scan).
+    ///
+    /// Example pre-commit hook:
+    ///   react-perf-analyzer ./src --only-changed --fail-on high
+    #[arg(long, default_value_t = false)]
+    pub only_changed: bool,
+
+    /// Path to a baseline JSON file produced by a previous run.
+    ///
+    /// Issues already present in the baseline are suppressed so CI only
+    /// fails on *new* regressions. Generate a baseline with:
+    ///   react-perf-analyzer ./src --format json --output .sast-baseline.json
+    ///
+    /// (Phase 6 feature — placeholder; baseline path is parsed but not yet
+    ///  acted upon in this release.)
+    #[arg(long, value_name = "FILE")]
+    pub baseline: Option<PathBuf>,
 }
 
 /// Supported output formats.
