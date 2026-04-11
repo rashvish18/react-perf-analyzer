@@ -141,7 +141,12 @@ pub fn report_json(issues: &[Issue]) -> usize {
 /// - Full issue table grouped by file with collapsible sections
 ///
 /// No external CDN dependencies — the returned string is a complete `.html` file.
-pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count: usize) -> String {
+pub fn report_html(
+    issues: &[Issue],
+    scanned_path: &std::path::Path,
+    file_count: usize,
+    external_ran: bool,
+) -> String {
     use std::collections::HashMap;
 
     // ── Aggregate stats ───────────────────────────────────────────────────────
@@ -379,6 +384,23 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
     let scan_path_str = scanned_path.display();
     let affected_files = file_list.len();
 
+    // Build oxlint / cargo-audit stat tiles: N/A when external tools didn't run.
+    let oxlint_tile = if external_ran {
+        format!(
+            r#"<div class="stat"><div class="stat-num" style="color:#3b82f6">{oxlint_count}</div><div class="stat-lbl">oxlint</div></div>"#
+        )
+    } else {
+        r#"<div class="stat"><div class="stat-num" style="color:#475569;font-size:22px">N/A</div><div class="stat-lbl">oxlint</div></div>"#.to_string()
+    };
+
+    let audit_tile = if external_ran {
+        format!(
+            r#"<div class="stat"><div class="stat-num" style="color:#dc2626">{audit_count}</div><div class="stat-lbl">cargo-audit</div></div>"#
+        )
+    } else {
+        r#"<div class="stat"><div class="stat-num" style="color:#475569;font-size:22px">N/A</div><div class="stat-lbl">cargo-audit</div></div>"#.to_string()
+    };
+
     // ── Assemble full HTML ────────────────────────────────────────────────────
 
     format!(
@@ -524,8 +546,8 @@ pub fn report_html(issues: &[Issue], scanned_path: &std::path::Path, file_count:
     <div class="stat"><div class="stat-num" style="color:#38bdf8">{file_count}</div><div class="stat-lbl">Files Scanned</div></div>
     <div class="stat"><div class="stat-num" style="color:#a78bfa">{affected_files}</div><div class="stat-lbl">Files with Issues</div></div>
     <div class="stat"><div class="stat-num" style="color:#f97316">{our_count}</div><div class="stat-lbl">React Rules</div></div>
-    <div class="stat"><div class="stat-num" style="color:#3b82f6">{oxlint_count}</div><div class="stat-lbl">oxlint</div></div>
-    <div class="stat"><div class="stat-num" style="color:#dc2626">{audit_count}</div><div class="stat-lbl">cargo-audit</div></div>
+    {oxlint_tile}
+    {audit_tile}
   </div>
 
   <!-- Rule breakdown -->

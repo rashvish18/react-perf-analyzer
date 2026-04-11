@@ -210,16 +210,16 @@ fn main() {
 
     // ── Step 3b: Run external tools (oxlint, cargo-audit) ────────────────────
     let mut all_issues = all_issues;
+    let external_ran = cli.external;
 
-    if !cli.no_external {
+    if cli.external {
         let ext = run_external_tools(&cli.path);
-        // Print skipped tool hints.
         for (tool, reason) in &ext.tools_skipped {
             eprintln!("  ⚠  {tool}: {reason}");
         }
         all_issues.extend(ext.issues);
     } else {
-        eprintln!("  ⏭  External tools skipped (--no-external)");
+        eprintln!("  ⏭  External tools not enabled (pass --external to run oxlint + cargo-audit)");
     }
 
     // ── Step 3c: Apply baseline (suppress known issues) ───────────────────────
@@ -247,7 +247,7 @@ fn main() {
             count
         }
         OutputFormat::Html => {
-            let html = report_html(&all_issues, &cli.path, file_count);
+            let html = report_html(&all_issues, &cli.path, file_count, external_ran);
             let out_path = cli
                 .output
                 .clone()
