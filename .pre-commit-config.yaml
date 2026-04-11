@@ -1,0 +1,51 @@
+# .pre-commit-config.yaml
+#
+# react-perf-analyzer pre-commit hook
+#
+# Drop this file in your project root and run:
+#   pip install pre-commit
+#   pre-commit install
+#
+# The hook runs only on staged JS/TS/JSX/TSX files (<10 ms typical).
+#
+# To skip for a single commit:
+#   git commit --no-verify
+
+repos:
+  - repo: local
+    hooks:
+      - id: react-perf-analyzer
+        name: React Perf + Security Analyzer
+        language: system
+        # Only trigger on JS/TS/JSX/TSX changes
+        types_or: [javascript, jsx, ts, tsx]
+        # Run the tool with --only-changed so it scans only staged files.
+        # --fail-on high means the commit is blocked only for high/critical issues.
+        entry: react-perf-analyzer
+        args:
+          - '.'
+          - '--only-changed'
+          - '--fail-on'
+          - 'high'
+          - '--category'
+          - 'all'
+        pass_filenames: false
+        always_run: false
+
+      # Optional: also generate an HTML report on each commit
+      # Uncomment the block below to enable it.
+      #
+      # - id: react-perf-analyzer-report
+      #   name: React Perf Analyzer HTML Report
+      #   language: system
+      #   types_or: [javascript, jsx, ts, tsx]
+      #   entry: react-perf-analyzer
+      #   args:
+      #     - '.'
+      #     - '--only-changed'
+      #     - '--format'
+      #     - 'html'
+      #     - '--output'
+      #     - 'react-perf-report.html'
+      #   pass_filenames: false
+      #   always_run: false

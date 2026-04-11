@@ -1,0 +1,98 @@
+# react-perf-analyzer.yml
+#
+# Reusable GitHub Actions workflow that runs react-perf-analyzer on every
+# push and pull request, then uploads SARIF results for inline PR annotations.
+#
+# Usage (copy this file into your own repo's .github/workflows/):
+#
+#   - name: Scan with react-perf-analyzer
+#     uses: rashvish18/react-perf-analyzer@v0.4
+#     with:
+#       path: './src'
+#       fail-on: 'high'
+
+name: React Perf + Security Scan
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  # Allow manual runs from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write   # required to upload SARIF
+
+jobs:
+  scan:
+    name: React Perf Analyzer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry + build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/react-perf-analyzer
+          key: ${{ runner.os }}-react-perf-analyzer-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-react-perf-analyzer-
+
+      - name: Install react-perf-analyzer
+        run: |
+          if ! command -v react-perf-analyzer &>/dev/null; then
+            cargo install react-perf-analyzer --locked --quiet
+          else
+            echo "react-perf-analyzer already cached"
+          fi
+
+      - name: Run analysis
+        id: scan
+        run: |
+          react-perf-analyzer . \
+            --format sarif \
+            --output results.sarif \
+            --fail-on high \
+            --category all
+        continue-on-error: true   # Let SARIF upload happen even if issues found
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+          category: 'react-perf-analyzer'
+
+      - name: Upload HTML report as artefact
+        if: always()
+        run: |
+          react-perf-analyzer . \
+            --format html \
+            --output react-perf-report.html \
+            --category all
+
+      - name: Store HTML report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: react-perf-report
+          path: react-perf-report.html
+          retention-days: 30
+
+      # Fail the job AFTER uploading results (so annotations appear even on failure)
+      - name: Check scan exit code
+        if: steps.scan.outcome == 'failure'
+        run: |
+          echo "❌ react-perf-analyzer found high/critical issues. See Security tab for details."
+          exit 1

@@ -1,0 +1,49 @@
+# gitlab-ci-template.yml
+#
+# GitLab CI template for react-perf-analyzer.
+#
+# Usage — add this to your project's .gitlab-ci.yml:
+#
+#   include:
+#     - project: 'your-group/react-perf-analyzer'
+#       file: '.github/workflows/gitlab-ci-template.yml'
+#
+# Or copy the job definition directly into your .gitlab-ci.yml.
+
+stages:
+  - security
+
+react-perf-analyzer:
+  stage: security
+  image: rust:slim
+  # Cache the installed binary across pipelines.
+  cache:
+    key: react-perf-analyzer-$CI_COMMIT_REF_SLUG
+    paths:
+      - $CARGO_HOME/bin/react-perf-analyzer
+      - $CARGO_HOME/registry/
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git
+    - |
+      if ! command -v react-perf-analyzer &>/dev/null; then
+        cargo install react-perf-analyzer --locked --quiet
+      fi
+  script:
+    - |
+      react-perf-analyzer . \
+        --format sarif \
+        --output gl-sast-report.sarif \
+        --fail-on high \
+        --category all
+  # GitLab native SAST report upload (shows inline MR annotations)
+  artifacts:
+    reports:
+      sast: gl-sast-report.sarif
+    paths:
+      - gl-sast-report.sarif
+    expire_in: 1 week
+    when: always
+  # Only run on MRs and default branch
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

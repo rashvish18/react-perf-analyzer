@@ -1,0 +1,124 @@
+name: 'react-perf-analyzer'
+description: >
+  React performance + security scanner. Finds perf anti-patterns, security
+  vulnerabilities, and CVEs in JS/TS/JSX/TSX codebases. Uploads results as
+  SARIF for inline GitHub PR annotations.
+
+author: 'rashvish18'
+
+branding:
+  icon: 'shield'
+  color: 'orange'
+
+inputs:
+  path:
+    description: 'Path to the directory or file to scan (default: repo root)'
+    required: false
+    default: '.'
+
+  format:
+    description: 'Output format: text | json | html | sarif (default: sarif)'
+    required: false
+    default: 'sarif'
+
+  output:
+    description: 'Output file path (default: results.sarif)'
+    required: false
+    default: 'results.sarif'
+
+  fail-on:
+    description: >
+      Minimum severity that causes a non-zero exit: none | low | medium |
+      high | critical. Default: high (CI fails on high/critical only).
+    required: false
+    default: 'high'
+
+  category:
+    description: 'Rule category: all | perf | security (default: all)'
+    required: false
+    default: 'all'
+
+  baseline:
+    description: >
+      Path to a .sast-baseline.json file. Known issues in the baseline are
+      suppressed so CI only fails on new regressions.
+    required: false
+    default: ''
+
+  upload-sarif:
+    description: >
+      Upload the SARIF file to GitHub Code Scanning (requires repo permission
+      security-events:write). Set to "false" to skip upload.
+    required: false
+    default: 'true'
+
+  version:
+    description: >
+      react-perf-analyzer version to install (e.g. "0.4.1").
+      Defaults to "latest".
+    required: false
+    default: 'latest'
+
+outputs:
+  sarif-path:
+    description: 'Absolute path to the generated SARIF file'
+    value: ${{ steps.scan.outputs.sarif-path }}
+
+  issue-count:
+    description: 'Total number of issues found'
+    value: ${{ steps.scan.outputs.issue-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install react-perf-analyzer
+      shell: bash
+      run: |
+        if [[ "${{ inputs.version }}" == "latest" ]]; then
+          VERSION=$(curl -s https://crates.io/api/v1/crates/react-perf-analyzer \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['crate']['newest_version'])")
+        else
+          VERSION="${{ inputs.version }}"
+        fi
+        echo "Installing react-perf-analyzer v${VERSION}"
+        cargo install react-perf-analyzer --version "${VERSION}" --locked --quiet
+
+    - name: Run react-perf-analyzer
+      id: scan
+      shell: bash
+      run: |
+        BASELINE_FLAG=""
+        if [[ -n "${{ inputs.baseline }}" && -f "${{ inputs.baseline }}" ]]; then
+          BASELINE_FLAG="--baseline ${{ inputs.baseline }}"
+        fi
+
+        set +e
+        react-perf-analyzer "${{ inputs.path }}" \
+          --format "${{ inputs.format }}" \
+          --output "${{ inputs.output }}" \
+          --fail-on "${{ inputs.fail-on }}" \
+          --category "${{ inputs.category }}" \
+          $BASELINE_FLAG 2>&1
+        EXIT_CODE=$?
+        set -e
+
+        # Expose output variables
+        SARIF_ABS="$(pwd)/${{ inputs.output }}"
+        echo "sarif-path=${SARIF_ABS}" >> "$GITHUB_OUTPUT"
+
+        # Count results from SARIF (basic jq parse, fallback to 0)
+        if command -v jq &>/dev/null && [[ -f "${{ inputs.output }}" ]]; then
+          COUNT=$(jq '[.runs[].results | length] | add // 0' "${{ inputs.output }}" 2>/dev/null || echo 0)
+        else
+          COUNT=0
+        fi
+        echo "issue-count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+        exit $EXIT_CODE
+
+    - name: Upload SARIF to GitHub Code Scanning
+      if: inputs.upload-sarif == 'true' && always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.output }}
+        category: 'react-perf-analyzer'
