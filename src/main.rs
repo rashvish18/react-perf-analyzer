@@ -15,6 +15,7 @@ mod analyzer;
 mod baseline;
 mod changed_files;
 mod cli;
+mod custom_rules;
 mod file_loader;
 mod orchestrator;
 mod parser;
@@ -34,6 +35,7 @@ use crate::{
     baseline::{filter_baseline, load_baseline},
     changed_files::get_changed_files,
     cli::{Cli, FailOn, OutputFormat},
+    custom_rules::{find_default_rules_file, load_custom_rules, run_custom_rules},
     file_loader::collect_files,
     orchestrator::run_external_tools,
     parser::parse_file,
@@ -84,6 +86,32 @@ fn main() {
     let max_lines = cli.max_component_lines;
     let category = cli.category.clone();
 
+    // ── Step 2c: Load custom rules (TOML DSL) ────────────────────────────────
+    let custom_rule_set: Vec<custom_rules::CompiledRule> = {
+        // Explicit --rules path takes precedence; otherwise auto-discover.
+        let rules_path = cli
+            .rules
+            .clone()
+            .or_else(|| find_default_rules_file(&cli.path));
+        match rules_path {
+            Some(ref p) => {
+                let (compiled, errors) = load_custom_rules(p);
+                for err in &errors {
+                    eprintln!("⚠  custom rule: {err}");
+                }
+                if !compiled.is_empty() {
+                    eprintln!(
+                        "  📏 Custom rules loaded: {} rule(s) from '{}'",
+                        compiled.len(),
+                        p.display()
+                    );
+                }
+                compiled
+            }
+            None => vec![],
+        }
+    };
+
     // ── Step 3: Parallel parse + analyze ─────────────────────────────────────
     let all_issues: Vec<Issue> = files
         .par_iter()
@@ -110,7 +138,12 @@ fn main() {
                 }
             };
 
-            analyze(&program, &source_text, path, max_lines, &category)
+            let mut file_issues = analyze(&program, &source_text, path, max_lines, &category);
+            // Run custom TOML rules on the same source text.
+            if !custom_rule_set.is_empty() {
+                file_issues.extend(run_custom_rules(&custom_rule_set, &source_text, path));
+            }
+            file_issues
         })
         .collect();
 

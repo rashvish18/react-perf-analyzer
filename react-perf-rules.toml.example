@@ -1,0 +1,74 @@
+# react-perf-rules.toml.example
+#
+# Copy this file to `react-perf-rules.toml` in your project root.
+# react-perf-analyzer auto-discovers it — no flag required.
+#
+# Run manually:
+#   react-perf-analyzer ./src --rules react-perf-rules.toml
+#
+# ─── Rule fields ──────────────────────────────────────────────────────────────
+#
+# [[rule]]
+# id        (required) – unique ID shown in reports and issue output
+# message   (required) – human-readable explanation shown to the developer
+# pattern   (required) – Rust regex matched line-by-line against source code
+# severity  (optional) – info | low | medium | high | critical  (default: medium)
+# category  (optional) – perf | security                        (default: perf)
+# file_glob (optional) – only run on files matching this glob   (default: all)
+# ignore_if (optional) – suppress hits where line also matches this regex
+#
+# ─── Examples ─────────────────────────────────────────────────────────────────
+
+# 1. Block console.log in production source (allow in test files)
+[[rule]]
+id        = "no-console-log"
+message   = "Remove console.log() before merging — use a logging utility instead"
+severity  = "medium"
+category  = "perf"
+pattern   = "console\\.log\\s*\\("
+file_glob = "src/**/*.{ts,tsx,js,jsx}"
+ignore_if = "//\\s*nolint"
+
+# 2. Warn on TODO / FIXME comments older than a sprint
+[[rule]]
+id      = "no-stale-todo"
+message = "TODO/FIXME comment found — resolve or track in Jira"
+severity = "low"
+pattern  = "\\b(TODO|FIXME|HACK|XXX)\\b"
+ignore_if = "//\\s*nolint"
+
+# 3. Catch direct window.location mutations (use React Router instead)
+[[rule]]
+id       = "no-window-location-assign"
+message  = "Use React Router <Navigate> or useNavigate() instead of window.location"
+severity = "medium"
+category = "perf"
+pattern  = "window\\.location\\.(href|assign|replace)\\s*="
+
+# 4. Flag localStorage with no error handling
+[[rule]]
+id       = "no-raw-localstorage"
+message  = "Wrap localStorage calls in try/catch — Safari private mode throws"
+severity = "low"
+pattern  = "localStorage\\.(getItem|setItem|removeItem)\\s*\\("
+file_glob = "src/**/*.{ts,tsx}"
+ignore_if = "try\\s*\\{"
+
+# 5. Detect potential XSS via innerHTML (security)
+[[rule]]
+id       = "no-inner-html"
+message  = "Direct innerHTML assignment can cause XSS — use dangerouslySetInnerHTML with DOMPurify"
+severity = "high"
+category = "security"
+pattern  = "\\.innerHTML\\s*="
+ignore_if = "//\\s*nolint"
+
+# 6. Catch hardcoded http:// URLs (should be https)
+# Note: Rust regex does not support lookahead. Use ignore_if to skip localhost.
+[[rule]]
+id        = "no-http-url"
+message   = "Use HTTPS instead of HTTP to avoid mixed-content warnings"
+severity  = "medium"
+category  = "security"
+pattern   = "\"http://"
+ignore_if = "localhost|127\\.0\\.0\\.1|//\\s*nolint"

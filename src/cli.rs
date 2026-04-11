@@ -82,11 +82,24 @@ pub struct Cli {
     /// Issues already present in the baseline are suppressed so CI only
     /// fails on *new* regressions. Generate a baseline with:
     ///   react-perf-analyzer ./src --format json --output .sast-baseline.json
-    ///
-    /// (Phase 6 feature — placeholder; baseline path is parsed but not yet
-    ///  acted upon in this release.)
     #[arg(long, value_name = "FILE")]
     pub baseline: Option<PathBuf>,
+
+    /// Path to a TOML file containing custom lint rules.
+    ///
+    /// If not specified, the tool auto-discovers `react-perf-rules.toml`
+    /// by walking up from the scan path. Set to an empty string to disable
+    /// custom rules entirely.
+    ///
+    /// Example rule file:
+    ///
+    ///   [[rule]]
+    ///   id       = "no-console-log"
+    ///   message  = "Remove console.log before merging"
+    ///   severity = "medium"
+    ///   pattern  = "console\\.log\\s*\\("
+    #[arg(long, value_name = "FILE")]
+    pub rules: Option<PathBuf>,
 }
 
 /// Supported output formats.

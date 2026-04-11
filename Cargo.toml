@@ -27,6 +27,15 @@ walkdir = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# TOML parsing for custom rule DSL (Phase 8)
+toml = "0.8"
+
+# Regex matching for custom rule patterns (Phase 8)
+regex = "1"
+
+# Glob pattern matching for file_glob in custom rules (Phase 8)
+glob = "0.3"
+
 # OXC: Rust-native JS/TS/JSX parser
 # All oxc_* crates MUST share the same version — they are a monorepo.
 # Verify the latest matching version at: https://crates.io/crates/oxc_parser
