@@ -83,8 +83,8 @@ fn default_category() -> String {
 /// A parsed + compiled custom rule, ready to scan files.
 pub struct CompiledRule {
     pub def: CustomRuleDef,
-    pattern: regex::Regex,
-    ignore_if: Option<regex::Regex>,
+    pattern: regex_lite::Regex,
+    ignore_if: Option<regex_lite::Regex>,
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ pub fn load_custom_rules(path: &Path) -> (Vec<CompiledRule>, Vec<String>) {
         }
     };
 
-    let rule_file: RuleFile = match toml::from_str(&text) {
+    let rule_file: RuleFile = match basic_toml::from_str(&text) {
         Ok(f) => f,
         Err(e) => {
             return (
@@ -119,7 +119,7 @@ pub fn load_custom_rules(path: &Path) -> (Vec<CompiledRule>, Vec<String>) {
     let mut errors = Vec::new();
 
     for def in rule_file.rules {
-        let pattern = match regex::Regex::new(&def.pattern) {
+        let pattern = match regex_lite::Regex::new(&def.pattern) {
             Ok(r) => r,
             Err(e) => {
                 errors.push(format!(
@@ -131,7 +131,7 @@ pub fn load_custom_rules(path: &Path) -> (Vec<CompiledRule>, Vec<String>) {
         };
 
         let ignore_if = match def.ignore_if.as_deref() {
-            Some(ign) => match regex::Regex::new(ign) {
+            Some(ign) => match regex_lite::Regex::new(ign) {
                 Ok(r) => Some(r),
                 Err(e) => {
                     errors.push(format!(
@@ -286,8 +286,8 @@ mod tests {
                 file_glob: None,
                 ignore_if: ignore_if.map(str::to_string),
             },
-            pattern: regex::Regex::new(pattern).unwrap(),
-            ignore_if: ignore_if.map(|p| regex::Regex::new(p).unwrap()),
+            pattern: regex_lite::Regex::new(pattern).unwrap(),
+            ignore_if: ignore_if.map(|p| regex_lite::Regex::new(p).unwrap()),
         }
     }
 
@@ -337,7 +337,7 @@ pattern  = "console\\.log\\s*\\("
 severity = "high"
 category = "perf"
 "#;
-        let rule_file: RuleFile = toml::from_str(toml_src).unwrap();
+        let rule_file: RuleFile = basic_toml::from_str(toml_src).unwrap();
         assert_eq!(rule_file.rules.len(), 1);
         assert_eq!(rule_file.rules[0].id, "no-console");
         assert_eq!(rule_file.rules[0].severity, "high");
