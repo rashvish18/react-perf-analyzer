@@ -3,9 +3,9 @@
 /// # What this detects
 ///
 /// `window.postMessage(data, "*")` sends the message to ANY receiving window
-/// regardless of its origin. In micro-frontend architectures (common at Walmart
-/// and similar large-scale React apps), this can leak sensitive data to
-/// third-party iframes or parent pages.
+/// regardless of its origin. In micro-frontend architectures and large-scale
+/// React apps, this can leak sensitive data to third-party iframes or parent
+/// pages.
 ///
 /// ```tsx
 /// // BAD — sends to any origin

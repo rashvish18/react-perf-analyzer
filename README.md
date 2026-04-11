@@ -12,11 +12,15 @@
 `react-perf-analyzer` is the orchestration layer for React quality:
 
 ```
-oxc_linter   → 400+ general JS/TS rules       (called automatically)
-cargo-audit  → CVE scanning for Rust deps      (called if Cargo.lock found)
-OUR RULES    → React-specific perf + security  (what no other tool covers)
+oxc_linter   → 400+ general JS/TS rules       (opt-in via --external)
+cargo-audit  → CVE scanning for Rust deps      (opt-in via --external)
+OUR RULES    → React-specific perf + security  (always runs — zero config)
 OUR REPORT   → Unified HTML + SARIF across all sources in one command
 ```
+
+> By default only the built-in React rules run. Pass `--external` to also invoke
+> oxlint and cargo-audit. This keeps scans fast and avoids unexpected failures in
+> environments where those tools are not installed.
 
 ---
 
@@ -44,6 +48,9 @@ react-perf-analyzer ./src --format sarif --output results.sarif
 
 # CI gate — fail only on high/critical issues
 react-perf-analyzer ./src --fail-on high
+
+# Also run oxlint + cargo-audit (external tools, off by default)
+react-perf-analyzer ./src --external
 
 # Pre-commit mode — only scan changed files (<10 ms)
 react-perf-analyzer ./src --only-changed --fail-on high
@@ -99,6 +106,7 @@ react-perf-analyzer ./src --rules react-perf-rules.toml
 | `--output <FILE>` | stdout | Write output to file |
 | `--category` | `all` | Rule category: `all` \| `perf` \| `security` |
 | `--fail-on` | `none` | Severity gate: `none` \| `low` \| `medium` \| `high` \| `critical` |
+| `--external` | off | Also run oxlint (JS/TS rules) + cargo-audit (Rust CVEs) |
 | `--only-changed` | off | Only analyze git-changed files (pre-commit mode) |
 | `--baseline <FILE>` | — | Suppress known issues; fail only on new regressions |
 | `--rules <FILE>` | auto | TOML file with custom lint rules (no Rust required) |
@@ -108,6 +116,28 @@ react-perf-analyzer ./src --rules react-perf-rules.toml
 ---
 
 ## CI Integration
+
+### Jenkins / Looper / Buildkite (shell-based CI)
+
+For any CI system that runs shell steps directly, add two steps — download the
+binary and run the scan. The tool exits `1` when issues meet `--fail-on`,
+which automatically fails the PR check.
+
+```yaml
+# Generic shell step — adapt syntax to your CI system
+- name: download-react-perf-analyzer
+  sh: |
+    curl -sf -L -o /usr/local/bin/react-perf-analyzer \
+      https://github.com/rashvish18/react-perf-analyzer/releases/latest/download/react-perf-analyzer-linux-amd64
+    chmod +x /usr/local/bin/react-perf-analyzer
+
+- name: react-perf-scan
+  sh: |
+    # Exit code 1 = issues found at/above --fail-on level → blocks PR merge
+    react-perf-analyzer ./src --fail-on high --format sarif --output results.sarif
+```
+
+A ready-to-use template is available at `.looper.yml.example` in this repo.
 
 ### GitHub Actions
 
@@ -194,6 +224,7 @@ The file is auto-discovered in your project root. See `react-perf-rules.toml.exa
 The self-contained HTML report includes:
 
 - **6 stat tiles** — Total Issues, Files Scanned, Files with Issues, React Rules, oxlint, cargo-audit
+  *(oxlint and cargo-audit tiles show `N/A` when `--external` was not passed — distinguishes "not run" from "zero issues found")*
 - **Per-rule cards** — click to filter the issue table
 - **Top 10 files bar chart** — click bars to jump to file section
 - **Collapsible issue table** — severity + source badge on every row

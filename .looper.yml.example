@@ -1,0 +1,78 @@
+# .looper.yml.example
+#
+# react-perf-analyzer — Looper PR integration template (Walmart internal)
+# NOTE: This file references Walmart-internal infrastructure (Looper, Artifactory,
+# gecgithub01). It is intended for use inside Walmart's GitHub Enterprise only.
+#
+# Copy this file to .looper.yml in your repo (or merge the pr: block
+# into your existing .looper.yml).
+#
+# What this does:
+#   - Downloads the pre-built binary from Artifactory (fast, ~2s)
+#   - Scans src/ for React performance + security issues
+#   - Fails the PR check if any High or Critical issues are found (exit code 1)
+#   - Saves react-perf-report.sarif as a build artifact for offline review
+#
+# NOTE: Looper does not upload SARIF to a Security tab (that is a GitHub Actions
+# feature). The SARIF file is saved as a job artifact and can be reviewed locally
+# or imported into any SARIF-compatible viewer.
+#
+# Prerequisites:
+#   - Binary published to your Walmart Artifactory instance
+#   - ARTIFACTORY_USER / ARTIFACTORY_TOKEN available as Looper secrets
+#   - OR: build from source using the alternative step below
+#
+# Looper docs: https://looper.walmart.com/docs/general/git.html#pull-requests
+
+pr:
+  # ── Step 1: Download binary from Walmart Artifactory ──────────────────────
+  # Replace the URL with your actual Artifactory path after publishing the binary.
+  - name: download-react-perf-analyzer
+    sh: |
+      curl -sf \
+        -u "${ARTIFACTORY_USER}:${ARTIFACTORY_TOKEN}" \
+        -o /usr/local/bin/react-perf-analyzer \
+        "https://artifacts.walmart.com/artifactory/YOUR_REPO/react-perf-analyzer/0.5.0/react-perf-analyzer-linux-amd64"
+      chmod +x /usr/local/bin/react-perf-analyzer
+      react-perf-analyzer --version
+
+  # ── Alternative Step 1: Build from source (slower, ~30s) ──────────────────
+  # Use this if you haven't published to Artifactory yet.
+  # - name: build-react-perf-analyzer
+  #   sh: |
+  #     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet
+  #     source "$HOME/.cargo/env"
+  #     git clone https://gecgithub01.walmart.com/YOUR_ORG/react-perf-analyzer /tmp/rpa
+  #     cd /tmp/rpa && cargo build --release --quiet
+  #     cp /tmp/rpa/target/release/react-perf-analyzer /usr/local/bin/
+  #     react-perf-analyzer --version
+
+  # ── Step 2: Run the scan ───────────────────────────────────────────────────
+  # Scans ./src, fails on High/Critical, saves SARIF artifact.
+  # Remove --external if you do NOT want oxlint + cargo-audit to run.
+  - name: react-perf-scan
+    sh: |
+      react-perf-analyzer ./src \
+        --fail-on high \
+        --format sarif \
+        --output react-perf-report.sarif
+
+  # ── Optional Step 3: HTML report as artifact ──────────────────────────────
+  # Uncomment to also generate a self-contained HTML report.
+  # - name: react-perf-html-report
+  #   sh: |
+  #     react-perf-analyzer ./src \
+  #       --fail-on none \
+  #       --format html \
+  #       --output react-perf-report.html
+
+  # ── Optional Step 4: Baseline mode (suppress known issues) ────────────────
+  # After generating .sast-baseline.json and committing it to the repo,
+  # replace Step 2 above with:
+  # - name: react-perf-scan
+  #   sh: |
+  #     react-perf-analyzer ./src \
+  #       --fail-on high \
+  #       --baseline .sast-baseline.json \
+  #       --format sarif \
+  #       --output react-perf-report.sarif
