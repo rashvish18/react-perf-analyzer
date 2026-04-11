@@ -29,35 +29,62 @@ pub struct OrchestratorResult {
     pub tools_skipped: Vec<(&'static str, String)>,
 }
 
+/// Maximum number of JS/TS files before we skip oxlint.
+///
+/// oxlint is great for project-sized scans but becomes unwieldy on monorepos
+/// with tens-of-thousands of files — it can OOM, produce non-JSON output, or
+/// just be very slow. Above this threshold we skip it and tell the user to
+/// scope the scan more tightly.
+const OXLINT_FILE_LIMIT: usize = 5_000;
+
 /// Run all available external tools against `path` and return merged results.
+/// `js_file_count` is the number of JS/TS files already discovered so we can
+/// decide whether to run oxlint on the whole directory.
 pub fn run_external_tools(path: &Path) -> OrchestratorResult {
     let mut all_issues: Vec<Issue> = vec![];
     let mut tools_skipped: Vec<(&'static str, String)> = vec![];
 
     // ── oxlint ────────────────────────────────────────────────────────────────
-    eprint!("  🔍 Running oxlint...");
-    let _ = std::io::stderr().flush();
-    let t = Instant::now();
+    // Count JS/TS files under path to guard against monorepo blowup.
+    let js_count = count_js_files(path);
 
-    match run_oxlint(path) {
-        ToolResult::Ok(issues) => {
-            let elapsed_ms = t.elapsed().as_millis();
-            let count = issues.len();
-            eprint!(
-                "\r  ✅ oxlint — {count} issue(s) in {elapsed_ms}ms{}\n",
-                " ".repeat(20)
-            );
-            all_issues.extend(issues);
+    if js_count > OXLINT_FILE_LIMIT {
+        eprint!(
+            "\r  ⚠  oxlint skipped — {js_count} JS/TS files exceeds limit ({OXLINT_FILE_LIMIT}){}\n",
+            " ".repeat(5)
+        );
+        tools_skipped.push((
+            "oxlint",
+            format!(
+                "skipped on large repos (>{OXLINT_FILE_LIMIT} files). \
+                 Scope the scan: react-perf-analyzer ./src/components --no-external false"
+            ),
+        ));
+    } else {
+        eprint!("  🔍 Running oxlint ({js_count} files)...");
+        let _ = std::io::stderr().flush();
+        let t = Instant::now();
+
+        match run_oxlint(path) {
+            ToolResult::Ok(issues) => {
+                let elapsed_ms = t.elapsed().as_millis();
+                let count = issues.len();
+                eprint!(
+                    "\r  ✅ oxlint — {count} issue(s) in {elapsed_ms}ms{}\n",
+                    " ".repeat(20)
+                );
+                all_issues.extend(issues);
+            }
+            ToolResult::NotInstalled => {
+                eprint!("\r  ⚠  oxlint not found{}\n", " ".repeat(30));
+                tools_skipped.push(("oxlint", "not found — install: npm i -g oxlint".into()));
+            }
+            ToolResult::Failed(msg) => {
+                eprint!("\r  ⚠  oxlint failed{}\n", " ".repeat(30));
+                tools_skipped.push(("oxlint", format!("failed: {msg}")));
+            }
         }
-        ToolResult::NotInstalled => {
-            eprint!("\r  ⚠  oxlint not found{}\n", " ".repeat(30));
-            tools_skipped.push(("oxlint", "not found — install: npm i -g oxlint".into()));
-        }
-        ToolResult::Failed(msg) => {
-            eprint!("\r  ⚠  oxlint failed{}\n", " ".repeat(30));
-            tools_skipped.push(("oxlint", format!("failed: {msg}")));
-        }
-    }
+    } // end oxlint else-block
 
     // ── cargo-audit ───────────────────────────────────────────────────────────
     // Only runs if a Cargo.lock file exists in the scanned path.
@@ -147,12 +174,30 @@ fn run_oxlint(path: &Path) -> ToolResult {
 
     // oxlint exits 1 when issues are found — that's normal, not an error.
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
+    // Empty stdout: check if stderr says "not found" vs a real failure.
     if stdout.trim().is_empty() {
+        if stderr.contains("not found")
+            || stderr.contains("Cannot find")
+            || stderr.contains("command not found")
+        {
+            return ToolResult::NotInstalled;
+        }
+        // Truly empty output = no issues (e.g. all files filtered out).
         return ToolResult::Ok(vec![]);
     }
 
-    parse_oxlint_json(&stdout, path)
+    // oxlint sometimes writes progress/warning lines to stdout before the JSON.
+    // Find the first '{' to skip any non-JSON prefix.
+    let json_start = stdout.find('{').unwrap_or(0);
+    let json_str = &stdout[json_start..];
+
+    if json_str.trim().is_empty() {
+        return ToolResult::Ok(vec![]);
+    }
+
+    parse_oxlint_json(json_str, path)
 }
 
 fn parse_oxlint_json(json: &str, base_path: &Path) -> ToolResult {
@@ -378,4 +423,39 @@ fn extract_cvss_score(cvss: &str) -> Option<f64> {
         .next()
         .and_then(|s| s.parse::<f64>().ok())
         .filter(|&s| s > 0.0 && s <= 10.0)
+}
+
+/// Count JS/TS/JSX/TSX files under `path` (walks the tree, respects the same
+/// exclusion rules as `collect_files`). Used to guard oxlint against monorepos.
+/// Returns quickly by stopping the count once `OXLINT_FILE_LIMIT` is exceeded.
+fn count_js_files(path: &Path) -> usize {
+    use walkdir::WalkDir;
+    let mut count = 0usize;
+    let extensions = ["js", "jsx", "ts", "tsx", "mjs", "cjs"];
+
+    for entry in WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !matches!(
+                name.as_ref(),
+                "node_modules" | ".git" | "dist" | "build" | "target" | ".next" | "coverage"
+            )
+        })
+        .flatten()
+    {
+        if entry.file_type().is_file() {
+            if let Some(ext) = entry.path().extension() {
+                if extensions.contains(&ext.to_string_lossy().as_ref()) {
+                    count += 1;
+                    // Short-circuit: no need to count beyond the limit.
+                    if count > OXLINT_FILE_LIMIT {
+                        return count;
+                    }
+                }
+            }
+        }
+    }
+    count
 }
