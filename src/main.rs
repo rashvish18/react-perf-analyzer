@@ -44,7 +44,7 @@ use crate::{
     file_loader::collect_files,
     orchestrator::run_external_tools,
     parser::parse_file,
-    reporter::{report_html, report_json, report_sarif, report_text},
+    reporter::{print_stats_box, report_html, report_json, report_sarif, report_text},
     rules::Issue,
 };
 
@@ -289,13 +289,42 @@ fn main() {
         }
     };
 
-    // ── Step 5: Summary line ──────────────────────────────────────────────────
+    // ── Step 5: Stats box + summary line ─────────────────────────────────────
     let total_ms = total_start.elapsed().as_millis();
-    eprintln!(
-        "\n{} issue(s) found across {file_count} file(s) — total {}",
+
+    // Compute per-source counts for the box.
+    let our_count = all_issues
+        .iter()
+        .filter(|i| matches!(i.source, crate::rules::IssueSource::ReactPerfAnalyzer))
+        .count();
+    let oxlint_count = all_issues
+        .iter()
+        .filter(|i| matches!(i.source, crate::rules::IssueSource::OxcLinter))
+        .count();
+    let audit_count = all_issues
+        .iter()
+        .filter(|i| matches!(i.source, crate::rules::IssueSource::CargoAudit))
+        .count();
+
+    // Affected files = unique files that have at least one issue.
+    let affected_files = {
+        let mut files: Vec<_> = all_issues.iter().map(|i| &i.file).collect();
+        files.sort_unstable();
+        files.dedup();
+        files.len()
+    };
+
+    eprintln!();
+    print_stats_box(
         issue_count,
-        fmt_ms(total_ms),
+        file_count,
+        affected_files,
+        our_count,
+        external_ran,
+        oxlint_count,
+        audit_count,
     );
+    eprintln!("  Total time: {}", fmt_ms(total_ms));
 
     // ── Step 6: Exit code ─────────────────────────────────────────────────────
     let should_fail = match cli.fail_on {

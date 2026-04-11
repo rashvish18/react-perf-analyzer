@@ -35,6 +35,116 @@ use std::path::Path;
 
 use crate::rules::Issue;
 
+// ─── Terminal stats box ───────────────────────────────────────────────────────
+
+/// Print a compact stats box to stderr — mirrors the HTML summary tiles.
+///
+/// ```text
+/// ╭────────────────┬────────────────┬────────────────┬────────────────┬────────────────┬────────────────╮
+/// │      168       │     54178      │      312       │      168       │      N/A       │      N/A       │
+/// │  Total Issues  │ Files Scanned  │ Files w/Issues │  React Rules   │    oxlint      │  cargo-audit   │
+/// ╰────────────────┴────────────────┴────────────────┴────────────────┴────────────────┴────────────────╯
+/// ```
+pub fn print_stats_box(
+    total: usize,
+    file_count: usize,
+    affected_files: usize,
+    our_count: usize,
+    external_ran: bool,
+    oxlint_count: usize,
+    audit_count: usize,
+) {
+    // ANSI colours — numbers only; labels stay plain.
+    const RST: &str = "\x1b[0m";
+    const ORANGE: &str = "\x1b[38;5;208m"; // Total Issues
+    const CYAN: &str = "\x1b[36m"; // Files Scanned
+    const PURPLE: &str = "\x1b[35m"; // Files w/ Issues
+    const AMBER: &str = "\x1b[33m"; // React Rules
+    const BLUE: &str = "\x1b[34m"; // oxlint
+    const RED: &str = "\x1b[31m"; // cargo-audit
+    const DIM: &str = "\x1b[90m"; // N/A
+
+    // Store owned strings so we can borrow them as &str below.
+    let total_s = total.to_string();
+    let file_count_s = file_count.to_string();
+    let affected_s = affected_files.to_string();
+    let our_s = our_count.to_string();
+    let oxlint_s = if external_ran {
+        oxlint_count.to_string()
+    } else {
+        "N/A".to_string()
+    };
+    let audit_s = if external_ran {
+        audit_count.to_string()
+    } else {
+        "N/A".to_string()
+    };
+
+    // (plain_value, label, ansi_color)
+    let cells: [(&str, &str, &str); 6] = [
+        (&total_s, "Total Issues", ORANGE),
+        (&file_count_s, "Files Scanned", CYAN),
+        (&affected_s, "Files w/Issues", PURPLE),
+        (&our_s, "React Rules", AMBER),
+        (&oxlint_s, "oxlint", if external_ran { BLUE } else { DIM }),
+        (
+            &audit_s,
+            "cargo-audit",
+            if external_ran { RED } else { DIM },
+        ),
+    ];
+
+    const W: usize = 16; // inner visible width per cell
+
+    fn pad_center(s: &str, width: usize) -> String {
+        let len = s.chars().count();
+        if len >= width {
+            return s.to_string();
+        }
+        let total_pad = width - len;
+        let left = total_pad / 2;
+        let right = total_pad - left;
+        format!("{}{}{}", " ".repeat(left), s, " ".repeat(right))
+    }
+
+    let bar = "─".repeat(W);
+
+    // Top border
+    let top: String = std::iter::once(format!("╭{bar}"))
+        .chain((1..cells.len()).map(|_| format!("┬{bar}")))
+        .collect::<String>()
+        + "╮";
+    eprintln!("{top}");
+
+    // Numbers row (coloured)
+    let num_row: String = cells
+        .iter()
+        .map(|(val, _, color)| {
+            let centered = pad_center(val, W);
+            // Re-insert colour around the number itself (already centered with spaces).
+            let colored = centered.replacen(val.trim(), &format!("{color}{val}{RST}"), 1);
+            format!("│{colored}")
+        })
+        .collect::<String>()
+        + "│";
+    eprintln!("{num_row}");
+
+    // Label row
+    let lbl_row: String = cells
+        .iter()
+        .map(|(_, lbl, _)| format!("│{}", pad_center(lbl, W)))
+        .collect::<String>()
+        + "│";
+    eprintln!("{lbl_row}");
+
+    // Bottom border
+    let bot: String = std::iter::once(format!("╰{bar}"))
+        .chain((1..cells.len()).map(|_| format!("┴{bar}")))
+        .collect::<String>()
+        + "╯";
+    eprintln!("{bot}");
+}
+
 // ─── Text reporter ────────────────────────────────────────────────────────────
 
 /// Print issues to stdout in human-readable columnar format.
