@@ -12,6 +12,7 @@
 ///   1 — issues found at or above --fail-on threshold
 ///   2 — fatal error (path not found, write error)
 mod analyzer;
+mod baseline;
 mod changed_files;
 mod cli;
 mod file_loader;
@@ -30,6 +31,7 @@ use rayon::prelude::*;
 
 use crate::{
     analyzer::analyze,
+    baseline::{filter_baseline, load_baseline},
     changed_files::get_changed_files,
     cli::{Cli, FailOn, OutputFormat},
     file_loader::collect_files,
@@ -129,6 +131,14 @@ fn main() {
     // Merge external issues with our own.
     let mut all_issues = all_issues;
     all_issues.extend(ext.issues);
+
+    // ── Step 3c: Apply baseline (suppress known issues) ───────────────────────
+    let all_issues = if let Some(ref baseline_path) = cli.baseline {
+        let entries = load_baseline(baseline_path);
+        filter_baseline(all_issues, &entries)
+    } else {
+        all_issues
+    };
 
     // ── Step 4: Report ────────────────────────────────────────────────────────
     let issue_count = match cli.format {
