@@ -54,6 +54,17 @@ const TEST_SUFFIXES: &[&str] = &["test", "spec", "stories", "story"];
 /// Files that cannot be read are silently skipped. If `root` does not
 /// exist, an empty Vec is returned and a warning is printed.
 pub fn collect_files(root: &Path, include_tests: bool) -> Vec<PathBuf> {
+    // Canonicalize the root so that:
+    //   (a) relative paths like "." don't have a file_name() of "." which
+    //       starts with '.' and would be pruned by is_ignored_dir, and
+    //   (b) returned paths are absolute, enabling correct comparison with
+    //       the absolute paths returned by get_changed_files (--only-changed).
+    let root: std::borrow::Cow<Path> = match root.canonicalize() {
+        Ok(abs) => std::borrow::Cow::Owned(abs),
+        Err(_) => std::borrow::Cow::Borrowed(root),
+    };
+    let root = root.as_ref();
+
     // If the user pointed at a single file, return it directly.
     if root.is_file() {
         return if has_valid_extension(root) {

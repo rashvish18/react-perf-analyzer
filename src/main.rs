@@ -94,10 +94,19 @@ fn main() {
             eprintln!("  ✓ No changed JS/TS/JSX files — nothing to analyze.");
             std::process::exit(0);
         }
-        let changed_set: std::collections::HashSet<_> = changed.into_iter().collect();
+        // Canonicalize changed paths (absolute) so they compare correctly
+        // against walkdir-discovered paths (which may be relative when the
+        // scan root is "." or another relative path).
+        let changed_set: std::collections::HashSet<_> = changed
+            .into_iter()
+            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .collect();
         let filtered: Vec<_> = files
             .into_iter()
-            .filter(|f| changed_set.contains(f.as_path()))
+            .filter(|f| {
+                let canon = std::fs::canonicalize(f).unwrap_or_else(|_| f.clone());
+                changed_set.contains(canon.as_path())
+            })
             .collect();
         if filtered.is_empty() {
             eprintln!("  ✓ No changed JS/TS/JSX files in scope — nothing to analyze.");
