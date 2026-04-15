@@ -6,7 +6,10 @@
 #   pip install pre-commit
 #   pre-commit install
 #
-# The hook runs only on staged JS/TS/JSX/TSX files (<10 ms typical).
+# Hooks (in order):
+#   1. cargo fmt   — blocks commit if Rust code is not formatted
+#   2. cargo clippy — blocks commit on any Rust warnings
+#   3. react-perf-analyzer — blocks commit on high/critical React issues
 #
 # To skip for a single commit:
 #   git commit --no-verify
@@ -14,6 +17,28 @@
 repos:
   - repo: local
     hooks:
+      # ── Rust formatting ──────────────────────────────────────────────────────
+      - id: cargo-fmt
+        name: Rust Format Check (cargo fmt)
+        language: system
+        # Only run when Rust source files are staged
+        types: [rust]
+        entry: cargo fmt --all --
+        args: ['--check']
+        pass_filenames: false
+        always_run: false
+
+      # ── Rust linting ─────────────────────────────────────────────────────────
+      - id: cargo-clippy
+        name: Rust Lint (cargo clippy)
+        language: system
+        types: [rust]
+        entry: cargo clippy --all-targets --all-features --
+        args: ['-D', 'warnings']
+        pass_filenames: false
+        always_run: false
+
+      # ── React perf + security scan ───────────────────────────────────────────
       - id: react-perf-analyzer
         name: React Perf + Security Analyzer
         language: system
