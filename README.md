@@ -292,7 +292,7 @@ The hook runs `--only-changed` so only modified files are scanned on each commit
 ```yaml
 include:
   - project: 'rashvish18/react-perf-analyzer'
-    file: '.github/workflows/gitlab-ci-template.yml'
+    file: 'templates/gitlab-ci-template.yml'
 ```
 
 ---

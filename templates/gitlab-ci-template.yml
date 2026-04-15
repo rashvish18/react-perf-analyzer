@@ -6,7 +6,7 @@
 #
 #   include:
 #     - project: 'your-group/react-perf-analyzer'
-#       file: '.github/workflows/gitlab-ci-template.yml'
+#       file: 'templates/gitlab-ci-template.yml'
 #
 # Or copy the job definition directly into your .gitlab-ci.yml.
 
