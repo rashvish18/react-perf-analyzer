@@ -111,9 +111,44 @@ fn looks_like_secret(value: &str) -> bool {
     if value.len() < 12 {
         return false;
     }
+    // Strings with spaces are UI copy / error messages, never secrets
+    if value.contains(' ') {
+        return false;
+    }
     let low = value.to_lowercase();
     if PLACEHOLDERS.iter().any(|p| low.contains(p)) {
         return false;
+    }
+    // Bail out if the value looks like a human-readable identifier:
+    // camelCase/PascalCase key names and feature-flag variation strings
+    // have naturally high entropy but are NOT secrets.
+    //
+    // Heuristic: if the string contains only word chars + hyphens/underscores
+    // and has at most one digit run, it's almost certainly a readable key name
+    // (e.g. "itemPageSubscriptionOptions", "variation_lowReturnRate_gpM0hi").
+    // Real secrets (API keys, tokens) typically contain slashes, plusses,
+    // equals signs, or long digit sequences (base64 / hex patterns).
+    let all_word_chars = value
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
+    if all_word_chars {
+        // Extra check: real random tokens have low max-run-length ratio;
+        // readable identifiers have long alphabetic runs.
+        let longest_alpha_run = value
+            .chars()
+            .fold((0usize, 0usize), |(max, cur), c| {
+                if c.is_alphabetic() {
+                    let next = cur + 1;
+                    (max.max(next), next)
+                } else {
+                    (max, 0)
+                }
+            })
+            .0;
+        // If longest alpha run > 5 chars, it reads as a word → not a token
+        if longest_alpha_run > 5 {
+            return false;
+        }
     }
     // Shannon entropy > 3.5 suggests a random/generated token
     shannon_entropy(value) > 3.5

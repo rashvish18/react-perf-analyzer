@@ -885,3 +885,810 @@ pub fn print_summary(issues: &[Issue]) {
         eprintln!("  {rule:<24} {count} issue(s)");
     }
 }
+
+// ─── AI Prompt reporter ───────────────────────────────────────────────────────
+
+/// Generate a structured markdown file with one AI-ready prompt section per
+/// affected file.
+///
+/// Each section is self-contained: it lists every issue with its line, column,
+/// rule name, severity, and message, then embeds the full numbered source code,
+/// and finally gives the AI clear instructions so the developer can paste the
+/// section directly into Claude, Copilot Chat, Cursor, or any other assistant.
+///
+/// # Output layout
+///
+/// ```text
+/// # Fix React Issues: `src/components/UserCard.tsx`
+///
+/// > **2 issue(s) found.** Fix all of them …
+///
+/// ## Issues
+/// ### Issue 1 — Line 12, Col 18 | `no_inline_jsx_fn` | Medium
+/// **Problem**: Inline arrow function …
+///
+/// ## Full Source Code
+/// ```tsx
+/// 1 | import React …
+/// …
+/// ```
+///
+/// ## Instructions for AI
+/// …
+///
+/// ---
+///
+/// # Fix React Issues: `src/hooks/useData.ts`
+/// …
+/// ```
+///
+/// Returns the total number of issues across all files (used for exit code logic).
+///
+/// Single-file mode: all file sections concatenated into one `.md`.
+/// Use for small codebases (< ~100K estimated tokens).
+/// For large monorepos use `report_ai_prompt_dir` instead.
+pub fn report_ai_prompt(issues: &[Issue], output_path: Option<&std::path::Path>) -> usize {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+
+    if issues.is_empty() {
+        let msg = "✓ No issues found — nothing to fix.\n";
+        match output_path {
+            Some(p) => { let _ = fs::write(p, msg); }
+            None    => print!("{msg}"),
+        }
+        return 0;
+    }
+
+    // ── Sort + group ──────────────────────────────────────────────────────────
+    let mut sorted = issues.to_vec();
+    sorted.sort_by(|a, b| {
+        a.file.cmp(&b.file).then(a.line.cmp(&b.line)).then(a.column.cmp(&b.column))
+    });
+    let mut by_file: BTreeMap<PathBuf, Vec<&Issue>> = BTreeMap::new();
+    for issue in &sorted {
+        by_file.entry(issue.file.clone()).or_default().push(issue);
+    }
+
+    // ── Build one prompt block per file using the shared helper ───────────────
+    let mut blocks: Vec<String> = Vec::with_capacity(by_file.len());
+    for (file_path, file_issues) in &by_file {
+        let source = fs::read_to_string(file_path)
+            .unwrap_or_else(|err| format!("(could not read file: {err})"));
+        blocks.push(build_file_prompt_block(file_path, file_issues, &source));
+    }
+
+    let output = blocks.join("\n---\n\n");
+
+    match output_path {
+        Some(p) => {
+            if let Err(e) = fs::write(p, &output) {
+                eprintln!("Error writing AI prompt to '{}': {e}", p.display());
+            } else {
+                let est_tokens = output.len() / 4;
+                let file_count = by_file.len();
+                eprintln!(
+                    "   {file_count} file section(s) | {} issues | ~{} tokens estimated",
+                    issues.len(),
+                    fmt_token_count(est_tokens),
+                );
+                if est_tokens > 180_000 {
+                    eprintln!("   ⚠  Prompt is very large — consider splitting by file or using --category perf");
+                } else if est_tokens > 90_000 {
+                    eprintln!("   ⚠  Prompt is large — may exceed some AI tool context windows (GPT-4 Turbo: 128K)");
+                }
+            }
+        }
+        None => println!("{output}"),
+    }
+
+    issues.len()
+}
+
+// ─── Directory mode ───────────────────────────────────────────────────────────
+
+/// Directory mode: one self-contained `.md` per affected file + an `index.md`
+/// dashboard, written into `output_dir`.
+///
+/// Designed for large monorepos where a single-file prompt would be millions of
+/// tokens. Each per-file prompt is guaranteed to fit in any AI context window.
+///
+/// # Output layout
+/// ```text
+/// output_dir/
+/// ├── index.md                       ← priority-ranked dashboard with checkboxes
+/// ├── libs_item_breadcrumb_src_lib_breadcrumb-container.tsx.md
+/// ├── libs_item_buy-box_src_lib_buy-box.tsx.md
+/// └── …
+/// ```
+///
+/// `index.md` sorts files by priority score (critical×100 + high×10 + medium×1)
+/// so developers always tackle the highest-impact files first.
+pub fn report_ai_prompt_dir(
+    issues: &[Issue],
+    output_dir: &std::path::Path,
+    scan_root: &std::path::Path,
+) -> usize {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+
+    if issues.is_empty() {
+        eprintln!("✓ No issues found — nothing to fix.");
+        return 0;
+    }
+
+    // ── Create output directory ───────────────────────────────────────────────
+    if let Err(e) = fs::create_dir_all(output_dir) {
+        eprintln!("Error creating output directory '{}': {e}", output_dir.display());
+        return 0;
+    }
+
+    // ── Sort + group by file ──────────────────────────────────────────────────
+    let mut sorted = issues.to_vec();
+    sorted.sort_by(|a, b| {
+        a.file.cmp(&b.file).then(a.line.cmp(&b.line)).then(a.column.cmp(&b.column))
+    });
+    let mut by_file: BTreeMap<PathBuf, Vec<&Issue>> = BTreeMap::new();
+    for issue in &sorted {
+        by_file.entry(issue.file.clone()).or_default().push(issue);
+    }
+
+    // ── Write per-file prompts + collect metadata for index ──────────────────
+    let mut records: Vec<FileRecord> = Vec::with_capacity(by_file.len());
+    let mut total_tokens: usize = 0;
+
+    for (file_path, file_issues) in &by_file {
+        let source = fs::read_to_string(file_path)
+            .unwrap_or_else(|err| format!("(could not read file: {err})"));
+
+        let block = build_file_prompt_block(file_path, file_issues, &source);
+        let est_tokens = block.len() / 4;
+        total_tokens += est_tokens;
+
+        // ── Safe output filename (relative path with / replaced by _) ─────────
+        let safe_name = make_safe_filename(file_path, scan_root);
+        let out_path = output_dir.join(&safe_name);
+
+        if let Err(e) = fs::write(&out_path, &block) {
+            eprintln!("  ⚠  Could not write '{}': {e}", out_path.display());
+            continue;
+        }
+
+        // ── Severity breakdown for the index ──────────────────────────────────
+        let mut sev = SevCounts::default();
+        for issue in file_issues {
+            match issue.severity {
+                crate::rules::Severity::Critical => sev.critical += 1,
+                crate::rules::Severity::High     => sev.high += 1,
+                crate::rules::Severity::Medium   => sev.medium += 1,
+                crate::rules::Severity::Low      => sev.low += 1,
+                crate::rules::Severity::Info     => sev.info += 1,
+            }
+        }
+
+        // Relative display path (falls back to absolute if stripping fails).
+        let rel_display = file_path
+            .strip_prefix(scan_root)
+            .unwrap_or(file_path)
+            .display()
+            .to_string();
+
+        records.push(FileRecord {
+            rel_display,
+            safe_name,
+            issue_count: file_issues.len(),
+            sev,
+            est_tokens,
+        });
+    }
+
+    // ── Sort records by priority score descending ─────────────────────────────
+    records.sort_by(|a, b| {
+        b.sev.priority_score()
+            .partial_cmp(&a.sev.priority_score())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.issue_count.cmp(&a.issue_count))
+    });
+
+    // ── Write index.md ────────────────────────────────────────────────────────
+    let index = build_index_md(&records, issues.len(), total_tokens, output_dir, scan_root);
+    let index_path = output_dir.join("index.md");
+    if let Err(e) = fs::write(&index_path, &index) {
+        eprintln!("Error writing index.md: {e}");
+    }
+
+    // ── Stderr summary ────────────────────────────────────────────────────────
+    let top = records.first();
+    eprintln!(
+        "   {} file prompt(s) | {} issues | ~{} total tokens",
+        records.len(),
+        issues.len(),
+        fmt_token_count(total_tokens),
+    );
+    if let Some(t) = top {
+        eprintln!(
+            "   🔥 Highest priority: {} ({} issues, ~{} tokens)",
+            t.rel_display,
+            t.issue_count,
+            fmt_token_count(t.est_tokens),
+        );
+    }
+    let dir_display = output_dir.to_string_lossy();
+    let dir_display = dir_display.trim_end_matches('/').trim_end_matches('\\');
+    eprintln!("   📋 Open {dir_display}/index.md to start fixing.");
+
+    issues.len()
+}
+
+// ─── Shared per-file block builder ───────────────────────────────────────────
+
+/// Build the full markdown prompt block for a single source file.
+///
+/// Used by both `report_ai_prompt` (single-file mode) and
+/// `report_ai_prompt_dir` (directory mode) so the output format is identical.
+fn build_file_prompt_block(
+    file_path: &std::path::Path,
+    file_issues: &[&Issue],
+    source: &str,
+) -> String {
+    use std::collections::BTreeMap;
+
+    let lang = match file_path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "tsx" => "tsx",
+        "jsx" => "jsx",
+        "ts"  => "ts",
+        _     => "js",
+    };
+
+    let file_display = file_path.display();
+    let n = file_issues.len();
+    let issue_label = if n == 1 { "issue" } else { "issues" };
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    let mut block = format!(
+        "# Fix React Issues: `{file_display}`\n\n\
+         > **{n} {issue_label} found.** \
+         Fix all of them without changing component logic or render output.\n\n\
+         ## Issues\n\n"
+    );
+
+    // ── Issue list with "why it hurts" blurb ─────────────────────────────────
+    for (idx, issue) in file_issues.iter().enumerate() {
+        let why = rule_why_blurb(&issue.rule);
+        block.push_str(&format!(
+            "### Issue {num} — Line {line}, Col {col} | `{rule}` | {sev}\n\
+             **Why it hurts**: {why}\n\
+             **Problem**: {msg}\n\n",
+            num  = idx + 1,
+            line = issue.line,
+            col  = issue.column,
+            rule = issue.rule,
+            sev  = issue.severity,
+            msg  = issue.message,
+        ));
+    }
+
+    // ── Line → issue number lookup for inline markers ─────────────────────────
+    let mut line_to_issues: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for (idx, issue) in file_issues.iter().enumerate() {
+        line_to_issues.entry(issue.line).or_default().push(idx + 1);
+    }
+
+    // ── Numbered source with inline markers ───────────────────────────────────
+    block.push_str("## Full Source Code\n\n");
+    block.push_str("> Lines marked with `// ← ⚠ Issue N` are the exact locations to fix.\n\n");
+    block.push_str(&format!("```{lang}\n"));
+    for (i, src_line) in source.lines().enumerate() {
+        let line_no = (i + 1) as u32;
+        if let Some(nums) = line_to_issues.get(&line_no) {
+            let labels: Vec<String> = nums.iter().map(|n| format!("Issue {n}")).collect();
+            block.push_str(&format!(
+                "{:>4} | {src_line}  // ← ⚠ {}\n",
+                line_no,
+                labels.join(", ")
+            ));
+        } else {
+            block.push_str(&format!("{:>4} | {src_line}\n", line_no));
+        }
+    }
+    block.push_str("```\n\n");
+
+    // ── AI instructions ───────────────────────────────────────────────────────
+    block.push_str(
+        "## Instructions for AI\n\n\
+         You are an expert React developer. Fix **ALL** the issues listed above \
+         in the source code shown.\n\n\
+         Rules:\n\
+         - Do **NOT** change any component logic, business logic, or render output\n\
+         - Preserve all imports, exports, and TypeScript types exactly as-is\n\
+         - Maintain the existing code style and formatting\n\
+         - Fix **only** the specific patterns described above — do not refactor anything else\n\
+         - Return the **complete corrected file** — no explanation, no markdown fences, \
+         just the raw source code\n",
+    );
+
+    block
+}
+
+// ─── Directory-mode helpers ───────────────────────────────────────────────────
+
+/// Per-severity counts for one file — used to build the index table.
+#[derive(Default)]
+struct SevCounts {
+    critical: usize,
+    high:     usize,
+    medium:   usize,
+    low:      usize,
+    info:     usize,
+}
+
+impl SevCounts {
+    /// Priority score: higher = fix this file first.
+    /// Security/critical issues float to the top of the index.
+    fn priority_score(&self) -> f64 {
+        self.critical as f64 * 100.0
+            + self.high   as f64 * 10.0
+            + self.medium as f64 * 1.0
+            + self.low    as f64 * 0.1
+    }
+}
+
+/// Metadata about one affected file, collected while writing per-file prompts.
+struct FileRecord {
+    rel_display: String,  // e.g. "libs/item/buy-box/src/lib/buy-box.tsx"
+    safe_name:   String,  // e.g. "libs_item_buy-box_src_lib_buy-box.tsx.md"
+    issue_count: usize,
+    sev:         SevCounts,
+    est_tokens:  usize,
+}
+
+/// Convert an absolute file path to a safe output filename.
+///
+/// Strips the `scan_root` prefix, then replaces `/`, `\`, `:`, and spaces
+/// with `_` so the name is safe on all file systems.
+///
+/// Example: `/users/dev/walmart/libs/item/buy-box/src/lib/buy-box.tsx`
+///   scan_root = `/users/dev/walmart`
+///   → `libs_item_buy-box_src_lib_buy-box.tsx.md`
+fn make_safe_filename(path: &std::path::Path, scan_root: &std::path::Path) -> String {
+    let rel = path.strip_prefix(scan_root).unwrap_or(path);
+    let s = rel.to_string_lossy();
+    let safe: String = s.chars().map(|c| match c {
+        '/' | '\\' | ':' | ' ' => '_',
+        c => c,
+    }).collect();
+    // Strip any leading underscore that results from an absolute path fallback.
+    let safe = safe.trim_start_matches('_');
+    format!("{safe}.md")
+}
+
+/// Build the `index.md` dashboard — action-oriented, step-based layout.
+///
+/// Design goals:
+/// - Readable in raw text (VS Code editor) AND rendered markdown
+/// - No complex tables — simple bullet lists
+/// - 3 clear steps: security first → high-impact → rest by module
+/// - Module grouping avoids overwhelming the user with 600+ individual files
+fn build_index_md(
+    records: &[FileRecord],
+    total_issues: usize,
+    total_tokens: usize,
+    prompt_dir: &std::path::Path,
+    scan_root: &std::path::Path,
+) -> String {
+    use std::collections::BTreeMap;
+
+    let file_count = records.len();
+    let tokens_str = fmt_token_count(total_tokens);
+    let prompt_dir_str = prompt_dir.to_string_lossy().trim_end_matches('/').to_string();
+    let scan_root_str = scan_root.to_string_lossy().trim_end_matches('/').to_string();
+    // ── Split into tiers ──────────────────────────────────────────────────────
+    // Tier 1: security (critical or high severity)
+    let security: Vec<&FileRecord> = records
+        .iter()
+        .filter(|r| r.sev.critical > 0 || r.sev.high > 0)
+        .collect();
+
+    // Tier 2: top 15 by issue count (excluding security files already shown)
+    let security_names: std::collections::HashSet<&str> =
+        security.iter().map(|r| r.rel_display.as_str()).collect();
+
+    let mut top_files: Vec<&FileRecord> = records
+        .iter()
+        .filter(|r| !security_names.contains(r.rel_display.as_str()))
+        .collect();
+    top_files.sort_by(|a, b| b.issue_count.cmp(&a.issue_count));
+    let top_files: Vec<&FileRecord> = top_files.into_iter().take(15).collect();
+
+    // Tier 3: everything else — grouped by top-level module (first path segment)
+    let shown: std::collections::HashSet<&str> = security
+        .iter()
+        .chain(top_files.iter())
+        .map(|r| r.rel_display.as_str())
+        .collect();
+
+    let mut modules: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // module → (files, issues)
+    for rec in records.iter().filter(|r| !shown.contains(r.rel_display.as_str())) {
+        let module = rec
+            .rel_display
+            .split('/')
+            .next()
+            .unwrap_or("other")
+            .to_string();
+        let entry = modules.entry(module).or_default();
+        entry.0 += 1;       // file count
+        entry.1 += rec.issue_count; // issue count
+    }
+
+    // ── Sort modules by issue count descending ───────────────────────────────
+    let remaining_total: usize = modules.values().map(|(_, i)| i).sum();
+    let remaining_files: usize = modules.values().map(|(f, _)| f).sum();
+    let mut module_list: Vec<(&String, &(usize, usize))> = modules.iter().collect();
+    module_list.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+
+    // ── Count totals for intake message ──────────────────────────────────────
+    let sec_count  = security.len();
+    let top_count  = top_files.len();
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ORCHESTRATOR PROMPT — paste the whole file into GitHub Copilot Chat, Cursor, or Claude
+    // The AI reads the instructions, interviews the user, fixes code, updates
+    // the checkboxes, and optionally raises a PR with attribution.
+    // ══════════════════════════════════════════════════════════════════════════
+
+    let mut md = String::new();
+
+    // ── Paste hint (HTML comment — not rendered in Markdown previews) ─────────
+    md.push_str(
+        "<!--\n  ╔══════════════════════════════════════════════════════════════╗\n\
+           ║  REACT PERF ORCHESTRATOR — paste this ENTIRE file into        ║\n\
+           ║  Claude, GitHub Copilot Chat, or Cursor to start the workflow. ║\n\
+           ║  The AI will guide you, fix files, and track progress here.    ║\n\
+           ╚══════════════════════════════════════════════════════════════════╝\n\
+         -->\n\n"
+    );
+
+    // ── Title ─────────────────────────────────────────────────────────────────
+    md.push_str(&format!(
+        "# 🤖 React Perf Fix Orchestrator\n\n\
+         > **{total_issues} issues · {file_count} files · ~{tokens_str} tokens**  \n\
+         > Powered by [react-perf-analyzer](https://github.com/rashvish18/react-perf-analyzer) · [crates.io](https://crates.io/crates/react-perf-analyzer)\n\n\
+         ---\n\n"
+    ));
+
+    // ── AI System Instructions ────────────────────────────────────────────────
+    md.push_str(&format!(
+        "## 🧠 Instructions for AI (read this first)\n\n\
+         You are a **senior React performance & security engineer** acting as a guided fix assistant.\n\
+         Your job:\n\
+         1. **Read this entire document** before doing anything\n\
+         2. **Run Phase 1** — ask the user the intake questions below\n\
+         3. **Run Phase 2** — fix files in the order the user chose, one at a time\n\
+         4. **Run Phase 3** — mark each fixed file `[x] ✅` in this document\n\
+         5. **Run Phase 4** — if the user wants a PR, create it with attribution\n\n\
+         > ⚠️ **Do NOT start fixing any code until Phase 1 is complete.**\n\n\
+         ### 📁 File Locations\n\n\
+         | | Path |\n\
+         |---|---|\n\
+         | **Source code root** | `{scan_root_str}` |\n\
+         | **Prompt files directory** | `{prompt_dir_str}` |\n\n\
+         To read a prompt file, use its full path: `{prompt_dir_str}/<filename>.md`  \n\
+         To edit a source file, look it up under: `{scan_root_str}/<relative-path>`  \n\
+         Example: link `detail-page_src_lib_foo.tsx.md` → read `{prompt_dir_str}/detail-page_src_lib_foo.tsx.md`  \n\
+         then edit `{scan_root_str}/detail-page/src/lib/foo.tsx`\n\n\
+         ---\n\n"
+    ));
+
+    // ── Phase 1: Intake ───────────────────────────────────────────────────────
+    md.push_str(&format!(
+        "## Phase 1 — 🎤 Intake\n\n\
+         Send the user **exactly** this message, then wait for their reply:\n\n\
+         ---\n\n\
+         👋 I've scanned your codebase with **react-perf-analyzer** and found \
+         **{total_issues} issues across {file_count} files**. \
+         Answer the questions below — reply with the **numbers** (e.g. `1, 1, 2, 1`).\n\n\
+         **Q1 — Scope** — How many files to fix today?\n\
+         `1` 🔴 Security only — {sec_count} file{sec_s} with critical/high severity *(recommended)*\n\
+         `2` 🟡 Top 15 files — biggest performance wins\n\
+         `3` 📦 All {file_count} files — full cleanup\n\
+         `4` 🔢 Custom — specify how many\n\n\
+         **Q2 — Severity** — Which severity levels?\n\
+         `1` 🔴 Critical + High only — security & serious perf issues\n\
+         `2` 🌐 All — including medium, low, informational\n\n\
+         **Q3 — Pull Request** — Open a PR when done?\n\
+         `1` ✅ Yes — create a PR with fix summary\n\
+         `2` ❌ No — fix locally only\n\n\
+         **Q4 — Skip** — Any files or modules to leave untouched?\n\
+         `1` ⏩ None — fix everything in scope\n\
+         `2` 🚫 Yes — I'll tell you which ones\n\n\
+         ---\n\n\
+         Once the user replies, map their numbers to choices, confirm with a summary:\n\n\
+         > ✅ **All set!** Starting with:\n\
+         > - 📂 **Scope:** [answer]\n\
+         > - 🔍 **Severity:** [answer]\n\
+         > - 🚀 **PR:** [answer]\n\
+         > - ⏩ **Skip:** [answer]\n\n\
+         Then proceed immediately to **Phase 2**.\n\n\
+         ---\n\n",
+        sec_s = if sec_count == 1 { "" } else { "s" }
+    ));
+
+    // ── Phase 2: Fix Queue ────────────────────────────────────────────────────
+    md.push_str(
+        "## Phase 2 — 🔧 Fix Queue\n\n\
+         > ⚠️ **Fix ONE file at a time. Do NOT narrate steps — the user sees ONLY the summary.**\n\n\
+         **For each file, silently run this full loop:**\n\n\
+         **Step A — Fix**\n\
+         - Read the `.md` prompt file for this file\n\
+         - Read the actual source file\n\
+         - Apply every fix listed in the prompt\n\n\
+         **Step B — Validate (run ALL, fix errors automatically)**\n\
+         - Run `react-perf-analyzer <file> --format text` — fix any remaining issues\n\
+         - Run `npx tsc --noEmit` (or the project's TS check) — fix any type errors introduced\n\
+         - Run `npx eslint <file> --fix` — fix any lint errors introduced\n\
+         - If any check fails: fix the error, then re-run that check until it passes\n\
+         - Repeat until ALL three checks are green\n\n\
+         **Step C — Mark done**\n\
+         - Update the checkbox: `[ ]` → `[x] ✅ fixed YYYY-MM-DD`\n\n\
+         **Step D — Show the user ONLY this summary:**\n\n\
+         > ✅ **Fixed `<filename>`**\n\
+         > | Check | Result |\n\
+         > |-------|--------|\n\
+         > | react-perf-analyzer | ✅ 0 issues |\n\
+         > | TypeScript | ✅ no errors |\n\
+         > | ESLint | ✅ no errors |\n\
+         >\n\
+         > **Changes made:**\n\
+         > - [rule] — what changed\n\
+         > - [rule] — what changed\n\n\
+         **After ALL files in scope are done — Step E (once, at the end):**\n\n\
+         First, always ask before doing anything with git:\n\n\
+         > 📋 **All fixes validated!** Before I commit or raise a PR, a few quick questions:\n\
+         >\n\
+         > `1` ✅ **Commit changes** — stage & commit the fixed files\n\
+         > `2` 🚀 **Commit + raise PR** — commit and open a Pull Request\n\
+         > `3` 👀 **Review first** — show me a diff of all changes before committing\n\
+         > `4` ⏸ **Skip for now** — I'll commit manually later\n\n\
+         - If `1` or `2`: stage only the fixed files, commit with message:\n\
+           `fix: resolve React perf & security issues (react-perf-analyzer)`\n\
+         - If `2`: also proceed to **Phase 4** to raise the PR\n\
+         - If `3`: show a concise diff summary, then ask again\n\
+         - If `4`: skip git entirely\n\n\
+         Finally, always show:\n\
+         > 🔁 **Ready for the next batch?** Type `Fix next` to continue with the remaining files.\n\n"
+    );
+
+    // ── Fix Queue — Security tier ─────────────────────────────────────────────
+    if security.is_empty() {
+        md.push_str("### ✅ Security Tier — No critical/high issues found\n\n");
+    } else {
+        md.push_str(&format!(
+            "### 🔴 Security Tier — Fix These First ({sec_count} file{sec_s})\n\n\
+             *XSS, unsafe hrefs, and other vulnerabilities — highest priority.*\n\n",
+            sec_s = if sec_count == 1 { "" } else { "s" }
+        ));
+        for rec in &security {
+            let badges = severity_badges(&rec.sev);
+            md.push_str(&format!(
+                "- [ ] [{file}]({link})  {badges} · {n} issue{s}\n",
+                file  = short_name(&rec.rel_display),
+                link  = rec.safe_name,
+                n     = rec.issue_count,
+                s     = if rec.issue_count == 1 { "" } else { "s" },
+            ));
+        }
+        md.push('\n');
+    }
+
+    // ── Fix Queue — High-impact tier ──────────────────────────────────────────
+    md.push_str(&format!(
+        "### 🟡 High-Impact Tier — Top {top_count} Files by Issue Count\n\n\
+         *Most issues per file — biggest performance wins.*\n\n"
+    ));
+    for (i, rec) in top_files.iter().enumerate() {
+        md.push_str(&format!(
+            "{}. [ ] [{file}]({link}) — **{n} issue{s}**\n",
+            i + 1,
+            file = short_name(&rec.rel_display),
+            link = rec.safe_name,
+            n    = rec.issue_count,
+            s    = if rec.issue_count == 1 { "" } else { "s" },
+        ));
+    }
+    md.push('\n');
+
+    // ── Fix Queue — Module tier ───────────────────────────────────────────────
+    if !modules.is_empty() {
+        md.push_str(&format!(
+            "### 📦 Remaining by Module ({remaining_files} files · {remaining_total} issues)\n\n\
+             *Fix module by module — great for delegating to different teams.*\n\n"
+        ));
+        for (module, (files, issues)) in &module_list {
+            md.push_str(&format!(
+                "- [ ] **{module}** — {issues} issue{is} in {files} file{fs} \
+                 *(look for `{module}_*.md` in this directory)*\n",
+                is = if *issues == 1 { "" } else { "s" },
+                fs = if *files == 1 { "" } else { "s" },
+            ));
+        }
+        md.push('\n');
+    }
+
+    md.push_str("---\n\n");
+
+    // ── Phase 3: Status Tracking ──────────────────────────────────────────────
+    md.push_str(&format!(
+        "## Phase 3 — ✅ Mark Fixed\n\n\
+         After verifying each fix, update the checkbox in **Phase 2** from:\n\
+         ````\n\
+         - [ ] some/file.tsx\n\
+         ````\n\
+         to:\n\
+         ````\n\
+         - [x] ✅ some/file.tsx  — fixed YYYY-MM-DD\n\
+         ````\n\n\
+         This file is your **live progress tracker** — update it as you go \
+         so you can resume later without re-running the scan.\n\n\
+         ### 📊 Progress Summary *(update as you go)*\n\n\
+         | | Count |\n\
+         |---|---|\n\
+         | Total files | {file_count} |\n\
+         | ✅ Fixed | 0 |\n\
+         | ⏳ Remaining | {file_count} |\n\n\
+         ---\n\n"
+    ));
+
+    // ── Phase 4: Pull Request ─────────────────────────────────────────────────
+    md.push_str(&format!(
+        "## Phase 4 — 🚀 Pull Request\n\n\
+         *Only run this phase if the user answered `yes` to Q3.*\n\n\
+         ### Step 4a — Ask the user\n\n\
+         Ask the user:\n\n\
+         - **Branch name?** *(default: `fix/react-perf-analyzer-fixes`)*\n\
+         - **PR title?** *(default: `fix: resolve React performance & security issues`)*\n\
+         - **Squash all commits into one?** yes / no\n\n\
+         ### Step 4b — Create the PR\n\n\
+         1. Create branch with the name the user chose\n\
+         2. Stage only the files you fixed (`git add -p` or list them explicitly)\n\
+         3. Commit with message: `fix: resolve React performance & security issues — {total_issues} issues in {file_count} files. Powered by react-perf-analyzer`\n\
+         4. Open the PR with title and a body that includes:\n\
+            - A summary table: issues found ({total_issues}), files fixed, critical/security fixed ({sec_count})\n\
+            - The list of ✅ fixed files copied from Phase 2\n\
+            - Verification note: each file was checked with `react-perf-analyzer <file> --format text`\n\
+            - Footer: `Generated by [react-perf-analyzer](https://github.com/rashvish18/react-perf-analyzer)`\n\n\
+         ---\n\n"
+    ));
+
+    // ── Footer ────────────────────────────────────────────────────────────────
+    md.push_str(&format!(
+        "*Generated by [react-perf-analyzer](https://github.com/rashvish18/react-perf-analyzer) · [crates.io](https://crates.io/crates/react-perf-analyzer) \
+         · {total_issues} issues · {file_count} files · ~{tokens_str} tokens*\n"
+    ));
+
+    md
+}
+
+/// Extract a short display name from a relative path (last 2 segments).
+///
+/// `detail-page/src/lib/detail-page-head/detail-page-head.tsx`
+///   → `detail-page / detail-page-head.tsx`
+fn short_name(rel: &str) -> String {
+    let parts: Vec<&str> = rel.split('/').collect();
+    match parts.len() {
+        0 => rel.to_string(),
+        1 => rel.to_string(),
+        2 => rel.to_string(),
+        n => format!("{} / {}", parts[0], parts[n - 1]),
+    }
+}
+
+/// Build compact severity badge string for a file record.
+fn severity_badges(sev: &SevCounts) -> String {
+    let mut badges = Vec::new();
+    if sev.critical > 0 {
+        badges.push(format!("🔴 {} critical", sev.critical));
+    }
+    if sev.high > 0 {
+        badges.push(format!("🟠 {} high", sev.high));
+    }
+    if badges.is_empty() {
+        String::new()
+    } else {
+        badges.join(" · ")
+    }
+}
+
+// ─── Rule explanation blurbs ──────────────────────────────────────────────────
+
+/// Returns a concise one-liner explaining *why* a given rule is a performance
+/// or security problem. Used in the AI prompt to give the model semantic context
+/// beyond just the issue message.
+fn rule_why_blurb(rule: &str) -> &'static str {
+    match rule {
+        "no_inline_jsx_fn" =>
+            "A new function object is created on every render. Child components wrapped in \
+             `React.memo` always see a changed prop and re-render unnecessarily.",
+        "unstable_props" =>
+            "Object/array literals create a new reference each render. \
+             `React.memo` and `shouldComponentUpdate` comparisons always fail, causing wasted re-renders.",
+        "no_array_index_key" =>
+            "Using array index as `key` breaks React's reconciliation when items are reordered \
+             or inserted, causing incorrect DOM updates and lost component state.",
+        "large_component" =>
+            "Large components are hard to memoize effectively and force React to diff more nodes \
+             per render. Splitting into smaller components enables finer-grained memoization.",
+        "no_new_context_value" =>
+            "An inline object/array as Context value is recreated every render, causing ALL \
+             context consumers to re-render even when the data hasn't changed.",
+        "no_expensive_in_render" =>
+            "Heavy computation runs synchronously on every render, blocking the main thread \
+             and causing frame drops. Wrap with `useMemo` to cache the result.",
+        "no_component_in_component" =>
+            "Defining a component inside another component creates a new component type each render. \
+             React unmounts and remounts the inner component every time, losing its state.",
+        "no_unstable_hook_deps" =>
+            "Object/array/function literals in deps arrays are always a new reference. \
+             `Object.is` comparison always returns false → hook runs on every render.",
+        "no_new_in_jsx_prop" =>
+            "`new` expressions in JSX props create a new instance every render, \
+             defeating memoization and causing unnecessary child re-renders.",
+        "no_use_state_lazy_init_missing" =>
+            "Passing a function call (not a function reference) to `useState` re-runs the \
+             expensive initializer on every render instead of only on mount.",
+        "no_json_in_render" =>
+            "`JSON.parse`/`JSON.stringify` are expensive operations. Running them in the \
+             render path blocks the main thread and can cause janky UI.",
+        "no_object_entries_in_render" =>
+            "`Object.entries/keys/values` creates a new array on every render. \
+             Cache the result with `useMemo` to avoid allocating on each render cycle.",
+        "no_regex_in_render" =>
+            "Regex literals in render are recompiled on every call. \
+             Move to module scope or cache with `useMemo`.",
+        "no_math_random_in_render" =>
+            "`Math.random()` in render produces a different value every render, \
+             making output non-deterministic and breaking React's reconciliation.",
+        "no_useless_memo" =>
+            "`useCallback`/`useMemo` with an empty `[]` deps array never recomputes — \
+             it adds hook overhead with no benefit. Extract to a module-level constant instead.",
+        // Security rules
+        "no_dangerously_set_inner_html_unescaped" =>
+            "Unescaped HTML injected via `dangerouslySetInnerHTML` can execute arbitrary \
+             scripts (XSS). Sanitize with DOMPurify or use a safe rendering API.",
+        "no_hardcoded_secret_in_jsx" =>
+            "Hardcoded secrets/tokens in JSX are bundled into the client and exposed publicly. \
+             Use environment variables or a secrets manager instead.",
+        "no_unsafe_href" =>
+            "`javascript:` URLs in `href` can execute scripts when clicked (XSS). \
+             Validate and sanitize all href values.",
+        "no_xss_via_jsx_prop" =>
+            "Unescaped user-controlled values in JSX props can inject malicious attributes. \
+             Sanitize all external input before rendering.",
+        "no_postmessage_wildcard" =>
+            "`postMessage` with `\"*\"` as the target origin sends messages to any window. \
+             Always specify the exact expected origin.",
+        _ => "See the issue message above for context and the suggested fix.",
+    }
+}
+
+// ─── Token count formatter ────────────────────────────────────────────────────
+
+/// Format a token count with K suffix for readability.
+///
+/// `4200`  → `"4,200"`
+/// `14200` → `"14.2K"`
+fn fmt_token_count(n: usize) -> String {
+    if n >= 10_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        // Add thousands separator manually for small numbers.
+        let s = n.to_string();
+        if s.len() > 3 {
+            let (head, tail) = s.split_at(s.len() - 3);
+            format!("{head},{tail}")
+        } else {
+            s
+        }
+    }
+}

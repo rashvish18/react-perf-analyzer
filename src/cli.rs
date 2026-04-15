@@ -29,15 +29,21 @@ pub struct Cli {
 
     /// Output format for lint results.
     ///
-    /// - text: Human-readable columnar output (default)
-    /// - json: Machine-readable JSON array
-    /// - html: Self-contained HTML report
-    /// - sarif: SARIF 2.1.0 for GitHub/GitLab/Azure DevOps inline annotations
+    /// - text:      Human-readable columnar output (default)
+    /// - json:      Machine-readable JSON array
+    /// - html:      Self-contained HTML report
+    /// - sarif:     SARIF 2.1.0 for GitHub/GitLab/Azure DevOps inline annotations
+    /// - ai-prompt: Markdown prompt file ready to paste into Claude, Copilot, Cursor, etc.
     #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: OutputFormat,
 
     /// Write output to a file instead of stdout.
-    #[arg(long, value_name = "FILE")]
+    ///
+    /// For `--format ai-prompt`, append a trailing `/` to enable **directory mode**:
+    /// one `.md` prompt file per source file + an `index.md` orchestrator dashboard.
+    ///
+    /// Example: `--output ./ai-fix-prompts/`
+    #[arg(long, value_name = "PATH")]
     pub output: Option<PathBuf>,
 
     /// Rule category to run.
@@ -127,6 +133,16 @@ pub enum OutputFormat {
     Html,
     /// SARIF 2.1.0 — GitHub/GitLab/Azure DevOps inline annotations.
     Sarif,
+    /// AI-ready prompt file for fixing issues with a coding assistant.
+    ///
+    /// Generates a structured markdown file (default: ai-fix-prompts.md) with
+    /// one self-contained section per affected file. Each section includes the
+    /// numbered issue list, the full file source, and copy-paste-ready
+    /// instructions for Claude, Copilot, Cursor, or any other AI coding tool.
+    ///
+    /// Example:
+    ///   react-perf-analyzer ./src --format ai-prompt --output fix-me.md
+    AiPrompt,
 }
 
 /// Rule category filter.

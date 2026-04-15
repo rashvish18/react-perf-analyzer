@@ -44,7 +44,7 @@ use crate::{
     file_loader::collect_files,
     orchestrator::run_external_tools,
     parser::parse_file,
-    reporter::{print_stats_box, report_html, report_json, report_sarif, report_text},
+    reporter::{print_stats_box, report_ai_prompt, report_ai_prompt_dir, report_html, report_json, report_sarif, report_text},
     rules::Issue,
 };
 
@@ -295,6 +295,39 @@ fn main() {
                 }
             }
             all_issues.len()
+        }
+        OutputFormat::AiPrompt => {
+            let out = cli.output.clone();
+
+            // Directory mode: triggered when --output ends with '/' or points
+            // to an existing directory. Writes one .md per affected file + index.md.
+            // Single-file mode: default — all sections in one .md (good for small repos).
+            let is_dir_mode = out.as_ref().map(|p| {
+                p.to_string_lossy().ends_with('/')
+                    || p.to_string_lossy().ends_with('\\')
+                    || p.is_dir()
+            }).unwrap_or(false);
+
+            if is_dir_mode {
+                let dir = out.unwrap_or_else(|| std::path::PathBuf::from("ai-fix-prompts"));
+                let count = report_ai_prompt_dir(&all_issues, &dir, &cli.path);
+                if count > 0 {
+                    let d = dir.to_string_lossy();
+                    let d = d.trim_end_matches('/').trim_end_matches('\\');
+                    eprintln!("✅ AI prompt directory → {d}/");
+                }
+                count
+            } else {
+                let out_path = out.unwrap_or_else(|| std::path::PathBuf::from("ai-fix-prompts.md"));
+                let count = report_ai_prompt(&all_issues, Some(&out_path));
+                if count > 0 {
+                    eprintln!("✅ AI prompt → {}", out_path.display());
+                    eprintln!(
+                        "   Paste individual file sections into Claude, Copilot, or Cursor to fix issues."
+                    );
+                }
+                count
+            }
         }
     };
 
