@@ -44,7 +44,10 @@ use crate::{
     file_loader::collect_files,
     orchestrator::run_external_tools,
     parser::parse_file,
-    reporter::{print_stats_box, report_ai_prompt, report_ai_prompt_dir, report_html, report_json, report_sarif, report_text},
+    reporter::{
+        print_stats_box, report_ai_prompt, report_ai_prompt_dir, report_html, report_json,
+        report_sarif, report_text,
+    },
     rules::Issue,
 };
 
@@ -302,11 +305,14 @@ fn main() {
             // Directory mode: triggered when --output ends with '/' or points
             // to an existing directory. Writes one .md per affected file + index.md.
             // Single-file mode: default — all sections in one .md (good for small repos).
-            let is_dir_mode = out.as_ref().map(|p| {
-                p.to_string_lossy().ends_with('/')
-                    || p.to_string_lossy().ends_with('\\')
-                    || p.is_dir()
-            }).unwrap_or(false);
+            let is_dir_mode = out
+                .as_ref()
+                .map(|p| {
+                    p.to_string_lossy().ends_with('/')
+                        || p.to_string_lossy().ends_with('\\')
+                        || p.is_dir()
+                })
+                .unwrap_or(false);
 
             if is_dir_mode {
                 let dir = out.unwrap_or_else(|| std::path::PathBuf::from("ai-fix-prompts"));

@@ -935,8 +935,10 @@ pub fn report_ai_prompt(issues: &[Issue], output_path: Option<&std::path::Path>)
     if issues.is_empty() {
         let msg = "✓ No issues found — nothing to fix.\n";
         match output_path {
-            Some(p) => { let _ = fs::write(p, msg); }
-            None    => print!("{msg}"),
+            Some(p) => {
+                let _ = fs::write(p, msg);
+            }
+            None => print!("{msg}"),
         }
         return 0;
     }
@@ -944,7 +946,10 @@ pub fn report_ai_prompt(issues: &[Issue], output_path: Option<&std::path::Path>)
     // ── Sort + group ──────────────────────────────────────────────────────────
     let mut sorted = issues.to_vec();
     sorted.sort_by(|a, b| {
-        a.file.cmp(&b.file).then(a.line.cmp(&b.line)).then(a.column.cmp(&b.column))
+        a.file
+            .cmp(&b.file)
+            .then(a.line.cmp(&b.line))
+            .then(a.column.cmp(&b.column))
     });
     let mut by_file: BTreeMap<PathBuf, Vec<&Issue>> = BTreeMap::new();
     for issue in &sorted {
@@ -1021,14 +1026,20 @@ pub fn report_ai_prompt_dir(
 
     // ── Create output directory ───────────────────────────────────────────────
     if let Err(e) = fs::create_dir_all(output_dir) {
-        eprintln!("Error creating output directory '{}': {e}", output_dir.display());
+        eprintln!(
+            "Error creating output directory '{}': {e}",
+            output_dir.display()
+        );
         return 0;
     }
 
     // ── Sort + group by file ──────────────────────────────────────────────────
     let mut sorted = issues.to_vec();
     sorted.sort_by(|a, b| {
-        a.file.cmp(&b.file).then(a.line.cmp(&b.line)).then(a.column.cmp(&b.column))
+        a.file
+            .cmp(&b.file)
+            .then(a.line.cmp(&b.line))
+            .then(a.column.cmp(&b.column))
     });
     let mut by_file: BTreeMap<PathBuf, Vec<&Issue>> = BTreeMap::new();
     for issue in &sorted {
@@ -1061,10 +1072,10 @@ pub fn report_ai_prompt_dir(
         for issue in file_issues {
             match issue.severity {
                 crate::rules::Severity::Critical => sev.critical += 1,
-                crate::rules::Severity::High     => sev.high += 1,
-                crate::rules::Severity::Medium   => sev.medium += 1,
-                crate::rules::Severity::Low      => sev.low += 1,
-                crate::rules::Severity::Info     => sev.info += 1,
+                crate::rules::Severity::High => sev.high += 1,
+                crate::rules::Severity::Medium => sev.medium += 1,
+                crate::rules::Severity::Low => sev.low += 1,
+                crate::rules::Severity::Info => sev.info += 1,
             }
         }
 
@@ -1086,7 +1097,8 @@ pub fn report_ai_prompt_dir(
 
     // ── Sort records by priority score descending ─────────────────────────────
     records.sort_by(|a, b| {
-        b.sev.priority_score()
+        b.sev
+            .priority_score()
             .partial_cmp(&a.sev.priority_score())
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.issue_count.cmp(&a.issue_count))
@@ -1138,8 +1150,8 @@ fn build_file_prompt_block(
     let lang = match file_path.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "tsx" => "tsx",
         "jsx" => "jsx",
-        "ts"  => "ts",
-        _     => "js",
+        "ts" => "ts",
+        _ => "js",
     };
 
     let file_display = file_path.display();
@@ -1161,12 +1173,12 @@ fn build_file_prompt_block(
             "### Issue {num} — Line {line}, Col {col} | `{rule}` | {sev}\n\
              **Why it hurts**: {why}\n\
              **Problem**: {msg}\n\n",
-            num  = idx + 1,
+            num = idx + 1,
             line = issue.line,
-            col  = issue.column,
+            col = issue.column,
             rule = issue.rule,
-            sev  = issue.severity,
-            msg  = issue.message,
+            sev = issue.severity,
+            msg = issue.message,
         ));
     }
 
@@ -1218,10 +1230,10 @@ fn build_file_prompt_block(
 #[derive(Default)]
 struct SevCounts {
     critical: usize,
-    high:     usize,
-    medium:   usize,
-    low:      usize,
-    info:     usize,
+    high: usize,
+    medium: usize,
+    low: usize,
+    info: usize,
 }
 
 impl SevCounts {
@@ -1229,19 +1241,19 @@ impl SevCounts {
     /// Security/critical issues float to the top of the index.
     fn priority_score(&self) -> f64 {
         self.critical as f64 * 100.0
-            + self.high   as f64 * 10.0
+            + self.high as f64 * 10.0
             + self.medium as f64 * 1.0
-            + self.low    as f64 * 0.1
+            + self.low as f64 * 0.1
     }
 }
 
 /// Metadata about one affected file, collected while writing per-file prompts.
 struct FileRecord {
-    rel_display: String,  // e.g. "libs/item/buy-box/src/lib/buy-box.tsx"
-    safe_name:   String,  // e.g. "libs_item_buy-box_src_lib_buy-box.tsx.md"
+    rel_display: String, // e.g. "libs/item/buy-box/src/lib/buy-box.tsx"
+    safe_name: String,   // e.g. "libs_item_buy-box_src_lib_buy-box.tsx.md"
     issue_count: usize,
-    sev:         SevCounts,
-    est_tokens:  usize,
+    sev: SevCounts,
+    est_tokens: usize,
 }
 
 /// Convert an absolute file path to a safe output filename.
@@ -1255,10 +1267,13 @@ struct FileRecord {
 fn make_safe_filename(path: &std::path::Path, scan_root: &std::path::Path) -> String {
     let rel = path.strip_prefix(scan_root).unwrap_or(path);
     let s = rel.to_string_lossy();
-    let safe: String = s.chars().map(|c| match c {
-        '/' | '\\' | ':' | ' ' => '_',
-        c => c,
-    }).collect();
+    let safe: String = s
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | ' ' => '_',
+            c => c,
+        })
+        .collect();
     // Strip any leading underscore that results from an absolute path fallback.
     let safe = safe.trim_start_matches('_');
     format!("{safe}.md")
@@ -1282,8 +1297,14 @@ fn build_index_md(
 
     let file_count = records.len();
     let tokens_str = fmt_token_count(total_tokens);
-    let prompt_dir_str = prompt_dir.to_string_lossy().trim_end_matches('/').to_string();
-    let scan_root_str = scan_root.to_string_lossy().trim_end_matches('/').to_string();
+    let prompt_dir_str = prompt_dir
+        .to_string_lossy()
+        .trim_end_matches('/')
+        .to_string();
+    let scan_root_str = scan_root
+        .to_string_lossy()
+        .trim_end_matches('/')
+        .to_string();
     // ── Split into tiers ──────────────────────────────────────────────────────
     // Tier 1: security (critical or high severity)
     let security: Vec<&FileRecord> = records
@@ -1310,7 +1331,10 @@ fn build_index_md(
         .collect();
 
     let mut modules: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // module → (files, issues)
-    for rec in records.iter().filter(|r| !shown.contains(r.rel_display.as_str())) {
+    for rec in records
+        .iter()
+        .filter(|r| !shown.contains(r.rel_display.as_str()))
+    {
         let module = rec
             .rel_display
             .split('/')
@@ -1318,7 +1342,7 @@ fn build_index_md(
             .unwrap_or("other")
             .to_string();
         let entry = modules.entry(module).or_default();
-        entry.0 += 1;       // file count
+        entry.0 += 1; // file count
         entry.1 += rec.issue_count; // issue count
     }
 
@@ -1326,11 +1350,11 @@ fn build_index_md(
     let remaining_total: usize = modules.values().map(|(_, i)| i).sum();
     let remaining_files: usize = modules.values().map(|(f, _)| f).sum();
     let mut module_list: Vec<(&String, &(usize, usize))> = modules.iter().collect();
-    module_list.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+    module_list.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
 
     // ── Count totals for intake message ──────────────────────────────────────
-    let sec_count  = security.len();
-    let top_count  = top_files.len();
+    let sec_count = security.len();
+    let top_count = top_files.len();
 
     // ══════════════════════════════════════════════════════════════════════════
     // ORCHESTRATOR PROMPT — paste the whole file into GitHub Copilot Chat, Cursor, or Claude
@@ -1347,7 +1371,7 @@ fn build_index_md(
            ║  Claude, GitHub Copilot Chat, or Cursor to start the workflow. ║\n\
            ║  The AI will guide you, fix files, and track progress here.    ║\n\
            ╚══════════════════════════════════════════════════════════════════╝\n\
-         -->\n\n"
+         -->\n\n",
     );
 
     // ── Title ─────────────────────────────────────────────────────────────────
@@ -1473,10 +1497,10 @@ fn build_index_md(
             let badges = severity_badges(&rec.sev);
             md.push_str(&format!(
                 "- [ ] [{file}]({link})  {badges} · {n} issue{s}\n",
-                file  = short_name(&rec.rel_display),
-                link  = rec.safe_name,
-                n     = rec.issue_count,
-                s     = if rec.issue_count == 1 { "" } else { "s" },
+                file = short_name(&rec.rel_display),
+                link = rec.safe_name,
+                n = rec.issue_count,
+                s = if rec.issue_count == 1 { "" } else { "s" },
             ));
         }
         md.push('\n');
@@ -1493,8 +1517,8 @@ fn build_index_md(
             i + 1,
             file = short_name(&rec.rel_display),
             link = rec.safe_name,
-            n    = rec.issue_count,
-            s    = if rec.issue_count == 1 { "" } else { "s" },
+            n = rec.issue_count,
+            s = if rec.issue_count == 1 { "" } else { "s" },
         ));
     }
     md.push('\n');
