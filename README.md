@@ -268,13 +268,11 @@ A ready-to-use template is available at `.looper.yml.example` in this repo.
     upload-sarif: 'true'   # Shows inline PR annotations
 ```
 
-Or use the bundled workflow directly:
+Or copy the bundled workflow template into your repo:
 
-```yaml
-# .github/workflows/scan.yml
-jobs:
-  scan:
-    uses: rashvish18/react-perf-analyzer/.github/workflows/react-perf-analyzer.yml@main
+```bash
+curl -o .github/workflows/react-perf-analyzer.yml \
+  https://raw.githubusercontent.com/rashvish18/react-perf-analyzer/main/templates/react-perf-analyzer.yml
 ```
 
 ### pre-commit hook
