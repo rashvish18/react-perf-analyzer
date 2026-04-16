@@ -1390,7 +1390,7 @@ fn build_index_md(
          1. **Read this entire document** before doing anything\n\
          2. **Run Phase 1** — ask the user the intake questions below\n\
          3. **Run Phase 2** — fix files in the order the user chose, one at a time\n\
-         4. **Run Phase 3** — mark each fixed file `[x] ✅` in this document\n\
+         4. **After each file** — edit `{prompt_dir_str}/index.md` and mark the file `[x] ✅ fixed YYYY-MM-DD`\n\
          5. **Run Phase 4** — if the user wants a PR, create it with attribution\n\n\
          > ⚠️ **Do NOT start fixing any code until Phase 1 is complete.**\n\n\
          ### 📁 File Locations\n\n\
@@ -1440,7 +1440,7 @@ fn build_index_md(
     ));
 
     // ── Phase 2: Fix Queue ────────────────────────────────────────────────────
-    md.push_str(
+    md.push_str(&format!(
         "## Phase 2 — 🔧 Fix Queue\n\n\
          > ⚠️ **Fix ONE file at a time. Do NOT narrate steps — the user sees ONLY the summary.**\n\n\
          **For each file, silently run this full loop:**\n\n\
@@ -1454,8 +1454,11 @@ fn build_index_md(
          - Run `npx eslint <file> --fix` — fix any lint errors introduced\n\
          - If any check fails: fix the error, then re-run that check until it passes\n\
          - Repeat until ALL three checks are green\n\n\
-         **Step C — Mark done**\n\
-         - Update the checkbox: `[ ]` → `[x] ✅ fixed YYYY-MM-DD`\n\n\
+         **Step C — Mark done (REQUIRED — edit the file)**\n\
+         - Open `{prompt_dir_str}/index.md` with your file-editing tool\n\
+         - Find the line for this file (it starts with `- [ ]`)\n\
+         - Replace `- [ ]` with `- [x] ✅ fixed YYYY-MM-DD` (use today's actual date)\n\
+         - Save the file — this is the live progress tracker, it MUST be kept up to date\n\n\
          **Step D — Show the user ONLY this summary:**\n\n\
          > ✅ **Fixed `<filename>`**\n\
          > | Check | Result |\n\
@@ -1482,7 +1485,7 @@ fn build_index_md(
          - If `4`: skip git entirely\n\n\
          Finally, always show:\n\
          > 🔁 **Ready for the next batch?** Type `Fix next` to continue with the remaining files.\n\n"
-    );
+    ));
 
     // ── Fix Queue — Security tier ─────────────────────────────────────────────
     if security.is_empty() {
@@ -1545,7 +1548,9 @@ fn build_index_md(
     // ── Phase 3: Status Tracking ──────────────────────────────────────────────
     md.push_str(&format!(
         "## Phase 3 — ✅ Mark Fixed\n\n\
-         After verifying each fix, update the checkbox in **Phase 2** from:\n\
+         > ⚠️ **You MUST edit `{prompt_dir_str}/index.md` after every file fix.**\n\
+         > Do not skip this step — it is how the user tracks progress.\n\n\
+         Use your file-editing tool to open `{prompt_dir_str}/index.md` and change the line for the fixed file from:\n\
          ````\n\
          - [ ] some/file.tsx\n\
          ````\n\
@@ -1553,8 +1558,9 @@ fn build_index_md(
          ````\n\
          - [x] ✅ some/file.tsx  — fixed YYYY-MM-DD\n\
          ````\n\n\
-         This file is your **live progress tracker** — update it as you go \
-         so you can resume later without re-running the scan.\n\n\
+         Replace `YYYY-MM-DD` with today's actual date. Save the file after each update.\n\n\
+         This file is your **live progress tracker** — keeping it current means the user \
+         can resume later without re-running the scan.\n\n\
          ### 📊 Progress Summary *(update as you go)*\n\n\
          | | Count |\n\
          |---|---|\n\
