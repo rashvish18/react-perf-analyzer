@@ -1024,6 +1024,18 @@ pub fn report_ai_prompt_dir(
         return 0;
     }
 
+    // Canonicalize scan_root so strip_prefix works correctly when the user
+    // passes a relative path (e.g. "." or "libs/item/hero") — file_path
+    // values coming from file_loader are already canonicalized absolute paths.
+    let scan_root_canon;
+    let scan_root: &std::path::Path = match scan_root.canonicalize() {
+        Ok(abs) => {
+            scan_root_canon = abs;
+            &scan_root_canon
+        }
+        Err(_) => scan_root,
+    };
+
     // ── Create output directory ───────────────────────────────────────────────
     if let Err(e) = fs::create_dir_all(output_dir) {
         eprintln!(
@@ -1600,18 +1612,38 @@ fn build_index_md(
     md
 }
 
-/// Extract a short display name from a relative path (last 2 segments).
+/// Extract a short display name from a relative path.
 ///
-/// `detail-page/src/lib/detail-page-head/detail-page-head.tsx`
-///   → `detail-page / detail-page-head.tsx`
+/// Shows the nearest meaningful parent directory + filename, skipping
+/// generic segments like `src`, `lib`, `libs`, `app`, `pages`, `components`.
+///
+/// Examples:
+///   `src/lib/visual-digest-components/overlay-media-panel.tsx`
+///     → `visual-digest-components / overlay-media-panel.tsx`
+///   `detail-page/src/lib/detail-page-head/detail-page-head.tsx`
+///     → `detail-page-head / detail-page-head.tsx`
+///   `hooks/useCart.ts`
+///     → `hooks / useCart.ts`
 fn short_name(rel: &str) -> String {
+    const SKIP: &[&str] = &["src", "lib", "libs", "app", "pages", "components", "index"];
     let parts: Vec<&str> = rel.split('/').collect();
-    match parts.len() {
-        0 => rel.to_string(),
-        1 => rel.to_string(),
-        2 => rel.to_string(),
-        n => format!("{} / {}", parts[0], parts[n - 1]),
+    let n = parts.len();
+    if n <= 1 {
+        return rel.to_string();
     }
+    let filename = parts[n - 1];
+    // Walk backwards from the second-to-last segment to find the first
+    // non-generic directory name.
+    let parent = parts[..n - 1]
+        .iter()
+        .rev()
+        .find(|&&seg| !SKIP.contains(&seg))
+        .copied()
+        .unwrap_or(parts[n - 2]);
+    if parent == filename {
+        return filename.to_string();
+    }
+    format!("{parent} / {filename}")
 }
 
 /// Build compact severity badge string for a file record.
