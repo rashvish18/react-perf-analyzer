@@ -261,7 +261,7 @@ A ready-to-use template is available at `.looper.yml.example` in this repo.
 
 ```yaml
 - name: React Perf + Security Scan
-  uses: rashvish18/react-perf-analyzer@v0.5
+  uses: rashvish18/react-perf-analyzer@v0.5.4
   with:
     path: './src'
     fail-on: 'high'
