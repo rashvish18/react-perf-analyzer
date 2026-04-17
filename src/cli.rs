@@ -120,6 +120,16 @@ pub struct Cli {
     ///   pattern  = "console\\.log\\s*\\("
     #[arg(long, value_name = "FILE")]
     pub rules: Option<PathBuf>,
+
+    /// Show only a summary (rule counts + total) instead of listing every issue.
+    ///
+    /// Useful for large codebases where the full per-issue output is too noisy.
+    /// The stats box and total count are always shown regardless of this flag.
+    ///
+    /// Example:
+    ///   react-perf-analyzer ./src --summary
+    #[arg(long, default_value_t = false)]
+    pub summary: bool,
 }
 
 /// Supported output formats.

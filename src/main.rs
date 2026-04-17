@@ -247,7 +247,7 @@ fn main() {
     // ── Step 4: Report ────────────────────────────────────────────────────────
     let issue_count = match cli.format {
         OutputFormat::Text => {
-            let count = report_text(&all_issues);
+            let count = report_text(&all_issues, cli.summary);
             if let Some(ref out_path) = cli.output {
                 let _ = fs::write(out_path, "");
             }

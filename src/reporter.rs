@@ -149,11 +149,15 @@ pub fn print_stats_box(
 
 /// Print issues to stdout in human-readable columnar format.
 ///
+/// When `summary_only` is true, individual issue lines are suppressed and
+/// only a rule-count breakdown + total is printed — useful for large codebases
+/// where the full per-issue list is too noisy. Pass `--summary` to enable.
+///
 /// Issues are sorted by file path then line number so the output is
 /// predictable and easy to scan.
 ///
 /// Returns the total number of issues printed (used for the summary line).
-pub fn report_text(issues: &[Issue]) -> usize {
+pub fn report_text(issues: &[Issue], summary_only: bool) -> usize {
     if issues.is_empty() {
         println!("✓ No performance issues found.");
         return 0;
@@ -168,35 +172,45 @@ pub fn report_text(issues: &[Issue]) -> usize {
             .then(a.column.cmp(&b.column))
     });
 
-    let mut current_file: Option<&Path> = None;
-
-    for issue in &sorted {
-        // Print a blank-line-separated file header on first occurrence.
-        if current_file != Some(&issue.file) {
-            if current_file.is_some() {
-                println!(); // blank line between files
+    if !summary_only {
+        let mut current_file: Option<&Path> = None;
+        for issue in &sorted {
+            // Print a blank-line-separated file header on first occurrence.
+            if current_file != Some(&issue.file) {
+                if current_file.is_some() {
+                    println!(); // blank line between files
+                }
+                current_file = Some(&issue.file);
             }
-            current_file = Some(&issue.file);
+            // Format:  path:line:col   severity   rule_name   message
+            println!(
+                "{file}:{line}:{col}  {severity}  {rule:<22}  {message}",
+                file = issue.file.display(),
+                line = issue.line,
+                col = issue.column,
+                severity = issue.severity,
+                rule = issue.rule,
+                message = issue.message,
+            );
         }
-
-        // Format:  path:line:col   severity   rule_name   message
-        // Column widths chosen to mirror ESLint's default output.
-        println!(
-            "{file}:{line}:{col}  {severity}  {rule:<22}  {message}",
-            file = issue.file.display(),
-            line = issue.line,
-            col = issue.column,
-            severity = issue.severity,
-            rule = issue.rule,
-            message = issue.message,
-        );
+        println!();
     }
 
-    // Summary line.
-    println!();
+    // Always show rule-count breakdown.
+    let mut by_rule: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for issue in &sorted {
+        *by_rule.entry(issue.rule.as_str()).or_default() += 1;
+    }
+    let mut pairs: Vec<_> = by_rule.into_iter().collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1));
+    println!("Rule breakdown:");
+    for (rule, count) in &pairs {
+        println!("  {rule:<32}  {count}");
+    }
+
     let count = sorted.len();
     let label = if count == 1 { "issue" } else { "issues" };
-    println!("✖ {count} {label} found");
+    println!("\n✖ {count} {label} found");
 
     count
 }
