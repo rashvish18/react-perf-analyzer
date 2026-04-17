@@ -1116,8 +1116,18 @@ pub fn report_ai_prompt_dir(
             .then(b.issue_count.cmp(&a.issue_count))
     });
 
+    // ── Write per-rule prompts + collect rule index metadata ─────────────────
+    let rule_records = write_rule_prompts(issues, output_dir, scan_root);
+
     // ── Write index.md ────────────────────────────────────────────────────────
-    let index = build_index_md(&records, issues.len(), total_tokens, output_dir, scan_root);
+    let index = build_index_md(
+        &records,
+        &rule_records,
+        issues.len(),
+        total_tokens,
+        output_dir,
+        scan_root,
+    );
     let index_path = output_dir.join("index.md");
     if let Err(e) = fs::write(&index_path, &index) {
         eprintln!("Error writing index.md: {e}");
@@ -1268,6 +1278,161 @@ struct FileRecord {
     est_tokens: usize,
 }
 
+/// Metadata about one rule, collected while writing per-rule prompts.
+struct RuleRecord {
+    rule: String,      // e.g. "no_array_index_key"
+    safe_name: String, // e.g. "rule_no_array_index_key.md"
+    issue_count: usize,
+    file_count: usize,
+}
+
+/// Write one `rule_<name>.md` prompt per rule that fires across ≥2 files.
+///
+/// Returns a list of rule records sorted by issue count descending, for use
+/// in the "Fix by Rule" section of `index.md`.
+fn write_rule_prompts(
+    issues: &[Issue],
+    output_dir: &std::path::Path,
+    scan_root: &std::path::Path,
+) -> Vec<RuleRecord> {
+    use std::collections::BTreeMap;
+    use std::fs;
+
+    // Group: rule → file → issues
+    let mut by_rule: BTreeMap<&str, BTreeMap<&std::path::Path, Vec<&Issue>>> = BTreeMap::new();
+    for issue in issues {
+        by_rule
+            .entry(&issue.rule)
+            .or_default()
+            .entry(issue.file.as_path())
+            .or_default()
+            .push(issue);
+    }
+
+    let mut records: Vec<RuleRecord> = Vec::new();
+
+    for (rule, files_map) in &by_rule {
+        // Only generate a rule prompt when the rule fires in ≥2 files — single-file
+        // rules are already fully covered by the per-file prompt.
+        if files_map.len() < 2 {
+            continue;
+        }
+
+        let safe_name = format!("rule_{}.md", rule.replace('/', "_"));
+        let mut block = String::new();
+
+        let total_issues: usize = files_map.values().map(|v| v.len()).sum();
+        let file_count = files_map.len();
+        let why = rule_why_blurb(rule);
+
+        block.push_str(&format!(
+            "# Fix by Rule: `{rule}`\n\n\
+             > **{total_issues} issue{ps} across {file_count} file{fs}.** \
+             Fix all of them without changing component logic or render output.\n\n\
+             **Why it hurts**: {why}\n\n\
+             ---\n\n",
+            ps = if total_issues == 1 { "" } else { "s" },
+            fs = if file_count == 1 { "" } else { "s" },
+        ));
+
+        block.push_str(
+            "## Instructions for AI\n\n\
+             Fix **every instance** of this rule across all files listed below.\n\
+             For each file:\n\
+             1. Read the source file\n\
+             2. Apply the fix to every flagged line\n\
+             3. Validate: `react-perf-analyzer <file> --format text` → must report 0 issues for this rule\n\
+             4. Edit `index.md` to mark the file `[x] ✅ fixed YYYY-MM-DD`\n\n\
+             Rules:\n\
+             - Do **NOT** change component logic, business logic, or render output\n\
+             - Fix **only** this rule — do not refactor anything else\n\
+             - Return the **complete corrected file** — no explanation, no markdown fences\n\n\
+             ---\n\n",
+        );
+
+        block.push_str("## Affected Files\n\n");
+
+        for (file_path, file_issues) in files_map {
+            let rel = file_path
+                .strip_prefix(scan_root)
+                .unwrap_or(file_path)
+                .display()
+                .to_string();
+
+            let lang = match file_path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+                "tsx" => "tsx",
+                "jsx" => "jsx",
+                "ts" => "ts",
+                _ => "js",
+            };
+
+            let source = fs::read_to_string(file_path)
+                .unwrap_or_else(|err| format!("(could not read file: {err})"));
+
+            block.push_str(&format!(
+                "### `{rel}` — {} issue{}\n\n",
+                file_issues.len(),
+                if file_issues.len() == 1 { "" } else { "s" }
+            ));
+
+            // List the violations
+            for issue in file_issues.iter() {
+                block.push_str(&format!(
+                    "- **Line {}** | {}: {}\n",
+                    issue.line, issue.severity, issue.message
+                ));
+            }
+            block.push('\n');
+
+            // Relevant source lines (flagged line ± 3 lines of context)
+            let flagged: std::collections::HashSet<u32> =
+                file_issues.iter().map(|i| i.line).collect();
+            let context_lines: std::collections::BTreeSet<u32> = flagged
+                .iter()
+                .flat_map(|&l| {
+                    let start = l.saturating_sub(3);
+                    let end = l + 3;
+                    (start..=end).collect::<Vec<_>>()
+                })
+                .collect();
+
+            block.push_str(&format!("```{lang}\n"));
+            for (i, src_line) in source.lines().enumerate() {
+                let line_no = (i + 1) as u32;
+                if context_lines.contains(&line_no) {
+                    let marker = if flagged.contains(&line_no) {
+                        "  // ← ⚠ fix this"
+                    } else {
+                        ""
+                    };
+                    block.push_str(&format!("{:>4} | {src_line}{marker}\n", line_no));
+                }
+            }
+            block.push_str("```\n\n");
+        }
+
+        let out_path = output_dir.join(&safe_name);
+        if let Err(e) = fs::write(&out_path, &block) {
+            eprintln!(
+                "  ⚠  Could not write rule prompt '{}': {e}",
+                out_path.display()
+            );
+            continue;
+        }
+
+        records.push(RuleRecord {
+            rule: rule.to_string(),
+            safe_name,
+            issue_count: total_issues,
+            file_count,
+        });
+    }
+
+    // Sort by issue count descending
+    records.sort_by(|a, b| b.issue_count.cmp(&a.issue_count));
+    records
+}
+
 /// Convert an absolute file path to a safe output filename.
 ///
 /// Strips the `scan_root` prefix, then replaces `/`, `\`, `:`, and spaces
@@ -1300,6 +1465,7 @@ fn make_safe_filename(path: &std::path::Path, scan_root: &std::path::Path) -> St
 /// - Module grouping avoids overwhelming the user with 600+ individual files
 fn build_index_md(
     records: &[FileRecord],
+    rule_records: &[RuleRecord],
     total_issues: usize,
     total_tokens: usize,
     prompt_dir: &std::path::Path,
@@ -1550,6 +1716,26 @@ fn build_index_md(
                  *(look for `{module}_*.md` in this directory)*\n",
                 is = if *issues == 1 { "" } else { "s" },
                 fs = if *files == 1 { "" } else { "s" },
+            ));
+        }
+        md.push('\n');
+    }
+
+    // ── Fix by Rule tier ─────────────────────────────────────────────────────
+    if !rule_records.is_empty() {
+        md.push_str(
+            "### 🔍 Fix by Rule — Apply One Pattern Across All Files\n\n\
+             *Fastest approach for mechanical fixes — one AI sweep fixes every instance of a rule.*\n\n",
+        );
+        for rr in rule_records {
+            md.push_str(&format!(
+                "- [ ] [`{rule}`]({safe}) — **{n} issue{s}** across {f} file{fs}\n",
+                rule = rr.rule,
+                safe = rr.safe_name,
+                n = rr.issue_count,
+                s = if rr.issue_count == 1 { "" } else { "s" },
+                f = rr.file_count,
+                fs = if rr.file_count == 1 { "" } else { "s" },
             ));
         }
         md.push('\n');
